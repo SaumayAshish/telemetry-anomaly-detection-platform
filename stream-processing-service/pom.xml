@@ -10,12 +10,12 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>ingestion-service</artifactId>
+    <artifactId>stream-processing-service</artifactId>
 
     <dependencies>
         <dependency>
             <groupId>org.apache.kafka</groupId>
-            <artifactId>kafka-clients</artifactId>
+            <artifactId>kafka-streams</artifactId>
         </dependency>
 
         <dependency>
