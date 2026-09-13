@@ -27,7 +27,7 @@ public class RollingStatsVerificationHarness {
 
         // Hand-constructing RollingStats via its canonical constructor, instead of
         // simulating .update() calls, gives us exact, predictable numbers to assert on.
-        RollingStats baseline = new RollingStats(minSamples, mean, variance * minSamples);
+        RollingStats baseline = new RollingStats(minSamples, mean, variance * minSamples, 0);
 
         check("value exactly at mean is not an anomaly",
                 !baseline.isAnomaly(mean, threshold, minSamples));
@@ -47,20 +47,35 @@ public class RollingStatsVerificationHarness {
         check("extreme outlier (10 sigma away) IS an anomaly",
                 baseline.isAnomaly(mean + 10 * stdDev, threshold, minSamples));
 
-        RollingStats belowWarmup = new RollingStats(minSamples - 1, mean, variance * (minSamples - 1));
+        RollingStats belowWarmup = new RollingStats(minSamples - 1, mean, variance * (minSamples - 1),0);
         check("extreme value BELOW the warm-up count is not scored at all",
                 !belowWarmup.isAnomaly(mean + 10 * stdDev, threshold, minSamples));
 
-        RollingStats exactlyAtWarmup = new RollingStats(minSamples, mean, variance * minSamples);
+        RollingStats exactlyAtWarmup = new RollingStats(minSamples, mean, variance * minSamples, 0);
         check("extreme value exactly AT the warm-up count boundary IS scored",
                 exactlyAtWarmup.isAnomaly(mean + 10 * stdDev, threshold, minSamples));
 
-        RollingStats zeroVariance = new RollingStats(minSamples + 20, mean, 0.0);
+        RollingStats zeroVariance = new RollingStats(minSamples + 20, mean, 0.0, 0);
         check("zero-variance baseline never flags, even for a wildly different value",
                 !zeroVariance.isAnomaly(mean * 5, threshold, minSamples));
 
         check("zero-variance baseline's zScore is Infinity/NaN, not an exception",
                 Double.isInfinite(zeroVariance.zScore(mean * 5)) || Double.isNaN(zeroVariance.zScore(mean * 5)));
+
+        RollingStats streakStart = baseline.withAnomalyStreak();
+        check("withAnomalyStreak() increments the streak without changing count/mean/m2",
+                streakStart.consecutiveAnomalies() == 1
+                        && streakStart.count() == baseline.count()
+                        && streakStart.mean() == baseline.mean()
+                        && streakStart.m2() == baseline.m2());
+
+        RollingStats streakOfThree = streakStart.withAnomalyStreak().withAnomalyStreak();
+        check("withAnomalyStreak() accumulates across repeated calls",
+                streakOfThree.consecutiveAnomalies() == 3);
+
+        RollingStats afterAcceptedReading = streakOfThree.update(mean);
+        check("update() resets the anomaly streak back to zero once a normal reading is accepted",
+                afterAcceptedReading.consecutiveAnomalies() == 0);
 
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed, out of " + (passed + failed) + " checks.");

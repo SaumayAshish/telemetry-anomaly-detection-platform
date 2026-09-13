@@ -1,9 +1,9 @@
 package com.telemetry.platform.streams;
 
-public record RollingStats(long count, double mean, double m2){
+public record RollingStats(long count, double mean, double m2, long consecutiveAnomalies){
 
     public static RollingStats initial() {
-        return new RollingStats(0, 0.0, 0.0);
+        return new RollingStats(0, 0.0, 0.0, 0);
     }
     public RollingStats update(double newValue) {
         long newCount = count + 1;
@@ -11,8 +11,10 @@ public record RollingStats(long count, double mean, double m2){
         double newMean = mean + delta /  newCount;
         double delta2 = newValue - newMean;
         double newM2 = m2 + delta * delta2;
-        return new RollingStats(newCount, newMean, newM2);
+        return new RollingStats(newCount, newMean, newM2, 0);
     }
+
+    public RollingStats withAnomalyStreak(){ return new RollingStats(count, mean, m2, consecutiveAnomalies + 1);}
 
     public double variance() {
         return count < 2 ? 0.0 : m2 / count;

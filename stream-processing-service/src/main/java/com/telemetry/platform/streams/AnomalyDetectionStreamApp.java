@@ -32,6 +32,7 @@ public class AnomalyDetectionStreamApp {
     private static final String INPUT_TOPIC = "telemetry.sensor.readings.v1";
     static final double Z_SCORE_THRESHOLD = 3.0;
     static final long MIN_SAMPLES_BEFORE_SCORING = 30;
+    static final long CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE = 10;
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     static {
@@ -82,18 +83,33 @@ public class AnomalyDetectionStreamApp {
                 .aggregate(
                         RollingStats::initial,
                         (sensorId, reading, currentStats) -> {
-                            if (currentStats.isAnomaly(reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING)) {
-                                double zScore = currentStats.zScore(reading.value());
-                                    System.out.println("ANOMALY DETECTED | sensor =" + sensorId
+                            boolean anomalous = currentStats.isAnomaly(
+                                    reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING);
+
+                            if (!anomalous) {
+                                return currentStats.update(reading.value());
+                            }
+
+                            long streak = currentStats.consecutiveAnomalies() + 1;
+                            double zScore = currentStats.zScore(reading.value());
+
+                            System.out.println("ANOMALY DETECTED | sensor=" + sensorId
                                     + " | value=" + reading.value()
                                     + " | baselineMean=" + currentStats.mean()
                                     + " | baselineStdDev=" + currentStats.stdDev()
-                                    + " | ZScore=" + zScore);
+                                    + " | zScore=" + zScore
+                                    + " | consecutiveAnomalies=" + streak);
 
+                            if (streak >= CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE) {
+                                System.out.println("RE-BASELINING sensor " + sensorId
+                                        + " after " + streak
+                                        + " consecutive anomalies - treating this as a genuine shift, not noise.");
+                                return RollingStats.initial().update(reading.value());
                             }
-                            return currentStats.update(reading.value());
+
+                            return currentStats.withAnomalyStreak();
                         },
-                        Materialized.<String, RollingStats, KeyValueStore<Bytes, byte[]>>as("sensor-baseline-store")
+                        Materialized.<String, RollingStats, KeyValueStore<Bytes, byte[]>>as("sensor-baseline-store-v2")
                                 .withKeySerde(Serdes.String())
                                 .withValueSerde(rollingStatsSerde)
                 );
