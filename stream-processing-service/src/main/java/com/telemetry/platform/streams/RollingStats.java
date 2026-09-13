@@ -21,4 +21,15 @@ public record RollingStats(long count, double mean, double m2){
     public double stdDev() {
         return Math.sqrt(variance());
     }
+
+    public double zScore(double newValue) {
+        return (newValue - mean) / stdDev();
+    }
+
+    public boolean isAnomaly(double newValue, double zScoreThreshold, long minSamplesBeforeScoring) {
+        if (count < minSamplesBeforeScoring || stdDev() <= 0.0) {
+            return false;
+        }
+        return Math.abs(zScore(newValue)) > zScoreThreshold;
+    }
 }

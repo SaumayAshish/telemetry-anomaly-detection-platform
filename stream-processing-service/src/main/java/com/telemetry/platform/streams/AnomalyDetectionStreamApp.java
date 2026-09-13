@@ -30,6 +30,8 @@ import java.util.Properties;
 public class AnomalyDetectionStreamApp {
 
     private static final String INPUT_TOPIC = "telemetry.sensor.readings.v1";
+    static final double Z_SCORE_THRESHOLD = 3.0;
+    static final long MIN_SAMPLES_BEFORE_SCORING = 30;
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     static {
@@ -74,6 +76,27 @@ public class AnomalyDetectionStreamApp {
                     + " | mean=" + stats.mean()
                     + " | stdDev=" + stats.stdDev());
         });
+
+        KTable<String, RollingStats> baselineStats = readings
+                .groupByKey(Grouped.with(Serdes.String(), sensorReadingSerde))
+                .aggregate(
+                        RollingStats::initial,
+                        (sensorId, reading, currentStats) -> {
+                            if (currentStats.isAnomaly(reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING)) {
+                                double zScore = currentStats.zScore(reading.value());
+                                    System.out.println("ANOMALY DETECTED | sensor =" + sensorId
+                                    + " | value=" + reading.value()
+                                    + " | baselineMean=" + currentStats.mean()
+                                    + " | baselineStdDev=" + currentStats.stdDev()
+                                    + " | ZScore=" + zScore);
+
+                            }
+                            return currentStats.update(reading.value());
+                        },
+                        Materialized.<String, RollingStats, KeyValueStore<Bytes, byte[]>>as("sensor-baseline-store")
+                                .withKeySerde(Serdes.String())
+                                .withValueSerde(rollingStatsSerde)
+                );
 
         Topology topology = builder.build();
 
