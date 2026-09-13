@@ -55,12 +55,10 @@ public class AnomalyDetectionStreamApp {
                 .groupByKey(Grouped.with(Serdes.String(), sensorReadingSerde))
                 .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofSeconds(30), Duration.ofSeconds(5)))
                 .aggregate(
-                        () -> new RollingStats(0, 0.0),
-                        (sensorId, reading, currentStats) -> new RollingStats(
-                                currentStats.count() + 1,
-                                currentStats.sum() + reading.value()
+                       RollingStats::initial,
+                        (sensorId, reading, currentStats) -> currentStats.update(reading.value()
                         ),
-                        Materialized.<String, RollingStats, WindowStore<Bytes, byte[]>>as("windowed-rolling-stats-store")
+                        Materialized.<String, RollingStats, WindowStore<Bytes, byte[]>>as("windowed-rolling-stats-store-v2")
                                 .withKeySerde(Serdes.String())
                                 .withValueSerde(rollingStatsSerde)
                 );
@@ -73,7 +71,8 @@ public class AnomalyDetectionStreamApp {
             System.out.println("Sensor " + sensorId
                     + " | window=[" + windowStart + " -> " + windowEnd + "]"
                     + " | count=" + stats.count()
-                    + " | windowAverage=" + stats.average());
+                    + " | mean=" + stats.mean()
+                    + " | stdDev=" + stats.stdDev());
         });
 
         Topology topology = builder.build();
