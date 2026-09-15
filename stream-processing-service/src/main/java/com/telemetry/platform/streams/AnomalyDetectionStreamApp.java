@@ -22,14 +22,22 @@ import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.kstream.TimeWindows;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.streams.kstream.Produced;
+import org.apache.kafka.streams.processor.api.FixedKeyProcessor;
+import org.apache.kafka.streams.processor.api.FixedKeyProcessorContext;
+import org.apache.kafka.streams.processor.api.FixedKeyProcessorSupplier;
+import org.apache.kafka.streams.processor.api.FixedKeyRecord;
+import org.apache.kafka.streams.state.StoreBuilder;
+import org.apache.kafka.streams.state.Stores;
+import java.util.Set;
 import java.time.Duration;
 import java.time.Instant;
-
 import java.util.Properties;
 
 public class AnomalyDetectionStreamApp {
 
     private static final String INPUT_TOPIC = "telemetry.sensor.readings.v1";
+    static final String ANOMALY_TOPIC = "telemetry.sensor.anomalies.v1";
     static final double Z_SCORE_THRESHOLD = 3.0;
     static final long MIN_SAMPLES_BEFORE_SCORING = 30;
     static final long CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE = 10;
@@ -58,9 +66,8 @@ public class AnomalyDetectionStreamApp {
                 .groupByKey(Grouped.with(Serdes.String(), sensorReadingSerde))
                 .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofSeconds(30), Duration.ofSeconds(5)))
                 .aggregate(
-                       RollingStats::initial,
-                        (sensorId, reading, currentStats) -> currentStats.update(reading.value()
-                        ),
+                        RollingStats::initial,
+                        (sensorId, reading, currentStats) -> currentStats.update(reading.value()),
                         Materialized.<String, RollingStats, WindowStore<Bytes, byte[]>>as("windowed-rolling-stats-store-v2")
                                 .withKeySerde(Serdes.String())
                                 .withValueSerde(rollingStatsSerde)
@@ -78,41 +85,18 @@ public class AnomalyDetectionStreamApp {
                     + " | stdDev=" + stats.stdDev());
         });
 
-        KTable<String, RollingStats> baselineStats = readings
-                .groupByKey(Grouped.with(Serdes.String(), sensorReadingSerde))
-                .aggregate(
-                        RollingStats::initial,
-                        (sensorId, reading, currentStats) -> {
-                            boolean anomalous = currentStats.isAnomaly(
-                                    reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING);
-
-                            if (!anomalous) {
-                                return currentStats.update(reading.value());
-                            }
-
-                            long streak = currentStats.consecutiveAnomalies() + 1;
-                            double zScore = currentStats.zScore(reading.value());
-
-                            System.out.println("ANOMALY DETECTED | sensor=" + sensorId
-                                    + " | value=" + reading.value()
-                                    + " | baselineMean=" + currentStats.mean()
-                                    + " | baselineStdDev=" + currentStats.stdDev()
-                                    + " | zScore=" + zScore
-                                    + " | consecutiveAnomalies=" + streak);
-
-                            if (streak >= CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE) {
-                                System.out.println("RE-BASELINING sensor " + sensorId
-                                        + " after " + streak
-                                        + " consecutive anomalies - treating this as a genuine shift, not noise.");
-                                return RollingStats.initial().update(reading.value());
-                            }
-
-                            return currentStats.withAnomalyStreak();
-                        },
-                        Materialized.<String, RollingStats, KeyValueStore<Bytes, byte[]>>as("sensor-baseline-store-v2")
-                                .withKeySerde(Serdes.String())
-                                .withValueSerde(rollingStatsSerde)
+        KStream<String, AnomalyEvent> anomalies =
+                readings.processValues(
+                        new AnomalyProcessorSupplier("sensor-baseline-store-v2")
                 );
+
+        anomalies.to(
+                ANOMALY_TOPIC,
+                Produced.with(
+                        Serdes.String(),
+                        jsonSerde(AnomalyEvent.class)
+                )
+        );
 
         Topology topology = builder.build();
 
@@ -120,6 +104,94 @@ public class AnomalyDetectionStreamApp {
         streams.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+    }
+
+    private static class AnomalyProcessorSupplier implements FixedKeyProcessorSupplier<String, SensorReading, AnomalyEvent> {
+
+        private final String storeName;
+
+        AnomalyProcessorSupplier(String storeName) {
+            this.storeName = storeName;
+        }
+
+        @Override
+        public FixedKeyProcessor<String, SensorReading, AnomalyEvent> get() {
+            return new AnomalyProcessor(storeName);
+        }
+
+        @Override
+        public Set<StoreBuilder<?>> stores() {
+            StoreBuilder<KeyValueStore<String, RollingStats>> storeBuilder = Stores.keyValueStoreBuilder(
+                    Stores.persistentKeyValueStore(storeName),
+                    Serdes.String(),
+                    jsonSerde(RollingStats.class)
+            );
+            return Set.of(storeBuilder);
+        }
+    }
+
+    private static class AnomalyProcessor implements FixedKeyProcessor<String, SensorReading, AnomalyEvent> {
+        private final String storeName;
+        private KeyValueStore<String, RollingStats> store;
+        private FixedKeyProcessorContext<String, AnomalyEvent> context;
+
+        AnomalyProcessor(String storeName) {
+            this.storeName = storeName;
+        }
+
+        @Override
+        public void init(FixedKeyProcessorContext<String, AnomalyEvent> context) {
+            this.context = context;
+            this.store = context.getStateStore(storeName);
+        }
+
+        @Override
+        public void process(FixedKeyRecord<String, SensorReading> record) {
+            String sensorId = record.key();
+            SensorReading reading = record.value();
+
+            RollingStats currentStats = store.get(sensorId);
+            if (currentStats == null) {
+                currentStats = RollingStats.initial();
+            }
+
+            boolean anomaly = currentStats.isAnomaly(reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING);
+
+            if (anomaly) {
+                long newStreak = currentStats.consecutiveAnomalies() + 1;
+                double zScore = currentStats.zScore(reading.value());
+                double baselineMean = currentStats.mean();
+                double baselineStdDev = currentStats.stdDev();
+
+                RollingStats newStats;
+                if (newStreak >= CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE) {
+                    newStats = RollingStats.initial().update(reading.value());
+                    System.out.println("RE-BASELINING | sensor=" + sensorId + " after " + newStreak + " consecutive anomalies");
+                } else {
+                    newStats = currentStats.withAnomalyStreak();
+                }
+                store.put(sensorId, newStats);
+
+                System.out.println("ANOMALY DETECTED | sensor=" + sensorId + " | value=" + reading.value()
+                        + " | baselineMean=" + baselineMean + " | baselineStdDev=" + baselineStdDev
+                        + " | zScore=" + zScore + " | consecutiveAnomalies=" + newStreak);
+
+                AnomalyEvent event = new AnomalyEvent(
+                        sensorId,
+                        reading.timestamp(),
+                        reading.value(),
+                        baselineMean,
+                        baselineStdDev,
+                        zScore,
+                        newStreak
+                );
+
+                context.forward(record.withValue(event));
+            } else {
+                RollingStats newStats = currentStats.update(reading.value());
+                store.put(sensorId, newStats);
+            }
+        }
     }
 
     private static <T> Serde<T> jsonSerde(Class<T> type) {
