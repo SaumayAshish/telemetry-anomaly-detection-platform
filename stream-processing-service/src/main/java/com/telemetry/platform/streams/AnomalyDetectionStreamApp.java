@@ -155,42 +155,28 @@ public class AnomalyDetectionStreamApp {
                 currentStats = RollingStats.initial();
             }
 
-            boolean anomaly = currentStats.isAnomaly(reading.value(), Z_SCORE_THRESHOLD, MIN_SAMPLES_BEFORE_SCORING);
+            AnomalyDecision decision = AnomalyDecisionEngine.decide(
+                    sensorId,
+                    reading,
+                    currentStats,
+                    Z_SCORE_THRESHOLD,
+                    MIN_SAMPLES_BEFORE_SCORING,
+                    CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE
+            );
 
-            if (anomaly) {
-                long newStreak = currentStats.consecutiveAnomalies() + 1;
-                double zScore = currentStats.zScore(reading.value());
-                double baselineMean = currentStats.mean();
-                double baselineStdDev = currentStats.stdDev();
+            store.put(sensorId, decision.newStats());
 
-                RollingStats newStats;
-                if (newStreak >= CONSECUTIVE_ANOMALIES_BEFORE_REBASELINE) {
-                    newStats = RollingStats.initial().update(reading.value());
-                    System.out.println("RE-BASELINING | sensor=" + sensorId + " after " + newStreak + " consecutive anomalies");
-                } else {
-                    newStats = currentStats.withAnomalyStreak();
+            decision.event().ifPresent(event -> {
+                if (decision.rebaselined()) {
+                    System.out.println("RE-BASELINING | sensor=" + sensorId + " after " + event.consecutiveAnomalies() + " consecutive anomalies");
                 }
-                store.put(sensorId, newStats);
 
-                System.out.println("ANOMALY DETECTED | sensor=" + sensorId + " | value=" + reading.value()
-                        + " | baselineMean=" + baselineMean + " | baselineStdDev=" + baselineStdDev
-                        + " | zScore=" + zScore + " | consecutiveAnomalies=" + newStreak);
-
-                AnomalyEvent event = new AnomalyEvent(
-                        sensorId,
-                        reading.timestamp(),
-                        reading.value(),
-                        baselineMean,
-                        baselineStdDev,
-                        zScore,
-                        newStreak
-                );
+                System.out.println("ANOMALY DETECTED | sensor=" + sensorId + " | value=" + event.value()
+                        + " | baselineMean=" + event.baselineMean() + " | baselineStdDev=" + event.baselineStdDev()
+                        + " | zScore=" + event.zScore() + " | consecutiveAnomalies=" + event.consecutiveAnomalies());
 
                 context.forward(record.withValue(event));
-            } else {
-                RollingStats newStats = currentStats.update(reading.value());
-                store.put(sensorId, newStats);
-            }
+            });
         }
     }
 
