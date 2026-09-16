@@ -23,6 +23,7 @@
         <module>common-models</module>
         <module>ingestion-service</module>
         <module>stream-processing-service</module>
+        <module>alerting-service</module>
     </modules>
 
     <dependencyManagement>
