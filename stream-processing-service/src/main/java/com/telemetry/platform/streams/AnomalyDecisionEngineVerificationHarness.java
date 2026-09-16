@@ -1,7 +1,7 @@
 package com.telemetry.platform.streams;
 
 import java.time.Instant;
-
+import com.telemetry.platform.events.AnomalyEvent;
 /**
  * Standalone verification harness for AnomalyDecisionEngine.decide() - the pure
  * decision core extracted out of AnomalyProcessor.

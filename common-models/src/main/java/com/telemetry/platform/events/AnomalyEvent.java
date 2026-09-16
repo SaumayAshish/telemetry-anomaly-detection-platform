@@ -1,5 +1,4 @@
-package com.telemetry.platform.streams;
-
+package com.telemetry.platform.events;
 import java.time.Instant;
 
 public record AnomalyEvent(
@@ -9,7 +8,4 @@ public record AnomalyEvent(
         double baselineMean,
         double baselineStdDev,
         double zScore,
-        long consecutiveAnomalies
-
-) {}
-
+        long consecutiveAnomalies ) {}
