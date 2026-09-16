@@ -2,6 +2,7 @@ package com.telemetry.platform.streams;
 
 import java.time.Instant;
 import com.telemetry.platform.events.AnomalyEvent;
+import com.telemetry.platform.events.AnomalySeverity;
 /**
  * Standalone verification harness for AnomalyDecisionEngine.decide() - the pure
  * decision core extracted out of AnomalyProcessor.
@@ -143,6 +144,76 @@ public class AnomalyDecisionEngineVerificationHarness {
 
         check("a zero-variance baseline never flags an event, even for a wildly different value",
                 zeroVarianceDecision.event().isEmpty());
+
+        // ---- Severity classification: AnomalySeverity.fromZScore() tier boundaries ----
+        // Reusing `baseline` from the normal-reading section above (mean=100.0,
+        // stdDev=10.0), so a reading of `mean + k * stdDev` produces a z-score of
+        // essentially exactly k against it - letting us land ON each tier boundary
+        // by construction, the same boundary-testing discipline used for the
+        // rebaseline threshold above (exact boundary + one-short-of-boundary pairs).
+
+        double lowValue = mean + 4.9 * stdDev; // z ~ 4.9 -> LOW
+        SensorReading lowReading = new SensorReading(sensorId, timestamp, "temperature", lowValue, 4);
+        AnomalyEvent lowEvent = AnomalyDecisionEngine.decide(
+                sensorId, lowReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score just below 5.0 is classified LOW",
+                lowEvent.severity() == AnomalySeverity.LOW);
+
+        double mediumBoundaryValue = mean + 5.0 * stdDev; // z == 5.0 exactly -> MEDIUM
+        SensorReading mediumBoundaryReading = new SensorReading(sensorId, timestamp, "temperature", mediumBoundaryValue, 5);
+        AnomalyEvent mediumBoundaryEvent = AnomalyDecisionEngine.decide(
+                sensorId, mediumBoundaryReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score of exactly 5.0 is classified MEDIUM (inclusive lower boundary)",
+                mediumBoundaryEvent.severity() == AnomalySeverity.MEDIUM);
+
+        double justBelowHighValue = mean + 9.9 * stdDev; // z ~ 9.9 -> still MEDIUM
+        SensorReading justBelowHighReading = new SensorReading(sensorId, timestamp, "temperature", justBelowHighValue, 6);
+        AnomalyEvent justBelowHighEvent = AnomalyDecisionEngine.decide(
+                sensorId, justBelowHighReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score just below 10.0 is still classified MEDIUM",
+                justBelowHighEvent.severity() == AnomalySeverity.MEDIUM);
+
+        double highBoundaryValue = mean + 10.0 * stdDev; // z == 10.0 exactly -> HIGH
+        SensorReading highBoundaryReading = new SensorReading(sensorId, timestamp, "temperature", highBoundaryValue, 7);
+        AnomalyEvent highBoundaryEvent = AnomalyDecisionEngine.decide(
+                sensorId, highBoundaryReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score of exactly 10.0 is classified HIGH (inclusive lower boundary)",
+                highBoundaryEvent.severity() == AnomalySeverity.HIGH);
+
+        double justBelowCriticalValue = mean + 14.9 * stdDev; // z ~ 14.9 -> still HIGH
+        SensorReading justBelowCriticalReading = new SensorReading(sensorId, timestamp, "temperature", justBelowCriticalValue, 8);
+        AnomalyEvent justBelowCriticalEvent = AnomalyDecisionEngine.decide(
+                sensorId, justBelowCriticalReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score just below 15.0 is still classified HIGH",
+                justBelowCriticalEvent.severity() == AnomalySeverity.HIGH);
+
+        double criticalBoundaryValue = mean + 15.0 * stdDev; // z == 15.0 exactly -> CRITICAL
+        SensorReading criticalBoundaryReading = new SensorReading(sensorId, timestamp, "temperature", criticalBoundaryValue, 9);
+        AnomalyEvent criticalBoundaryEvent = AnomalyDecisionEngine.decide(
+                sensorId, criticalBoundaryReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("z-score of exactly 15.0 is classified CRITICAL (inclusive lower boundary)",
+                criticalBoundaryEvent.severity() == AnomalySeverity.CRITICAL);
+
+        double negativeExtremeValue = mean - 20.0 * stdDev; // z ~ -20.0 -> CRITICAL by magnitude, not sign
+        SensorReading negativeExtremeReading = new SensorReading(sensorId, timestamp, "temperature", negativeExtremeValue, 10);
+        AnomalyEvent negativeExtremeEvent = AnomalyDecisionEngine.decide(
+                sensorId, negativeExtremeReading, baseline, threshold, minSamples, rebaselineAfter
+        ).event().orElseThrow();
+
+        check("a large NEGATIVE z-score is classified by magnitude, not sign (CRITICAL)",
+                negativeExtremeEvent.severity() == AnomalySeverity.CRITICAL);
 
         System.out.println();
         System.out.println(passed + " passed, " + failed + " failed, out of " + (passed + failed) + " checks.");

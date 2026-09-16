@@ -8,4 +8,5 @@ public record AnomalyEvent(
         double baselineMean,
         double baselineStdDev,
         double zScore,
-        long consecutiveAnomalies ) {}
+        long consecutiveAnomalies,
+        AnomalySeverity severity) {}

@@ -172,7 +172,8 @@ public class AnomalyDetectionStreamApp {
                     System.out.println("RE-BASELINING | sensor=" + sensorId + " after " + event.consecutiveAnomalies() + " consecutive anomalies");
                 }
 
-                System.out.println("ANOMALY DETECTED | sensor=" + sensorId + " | value=" + event.value()
+                System.out.println("ANOMALY DETECTED | sensor=" + sensorId + " | severity=" + event.severity()
+                        + " | value=" + event.value()
                         + " | baselineMean=" + event.baselineMean() + " | baselineStdDev=" + event.baselineStdDev()
                         + " | zScore=" + event.zScore() + " | consecutiveAnomalies=" + event.consecutiveAnomalies());
 

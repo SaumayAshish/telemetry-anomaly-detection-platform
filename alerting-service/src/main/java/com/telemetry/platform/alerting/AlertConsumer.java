@@ -68,6 +68,7 @@ public class AlertConsumer {
                 for (ConsumerRecord<String, AnomalyEvent> record : records) {
                     AnomalyEvent event = record.value();
                     System.out.println("ALERT | sensor=" + event.sensorId()
+                            + " | severity=" + event.severity()
                             + " | value=" + event.value()
                             + " | baselineMean=" + event.baselineMean()
                             + " | baselineStdDev=" + event.baselineStdDev()

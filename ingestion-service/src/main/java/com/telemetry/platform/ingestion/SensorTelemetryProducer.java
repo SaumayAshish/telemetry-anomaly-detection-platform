@@ -48,10 +48,8 @@ public class SensorTelemetryProducer {
             while (true) {
                 for (String sensorId : SENSOR_IDS) {
 
-
                     long sequenceNumber = sequenceNumbers.get(sensorId).getAndIncrement();
                     double simulatedTemperature = 65.0 + RANDOM.nextDouble() * 20.0;
-
 
                     SensorReading reading = new SensorReading(
                             sensorId,

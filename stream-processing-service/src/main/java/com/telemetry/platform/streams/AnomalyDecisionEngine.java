@@ -2,6 +2,7 @@ package com.telemetry.platform.streams;
 
 import java.util.Optional;
 import com.telemetry.platform.events.AnomalyEvent;
+import com.telemetry.platform.events.AnomalySeverity;
 public final class AnomalyDecisionEngine {
     private AnomalyDecisionEngine() {}
     public static AnomalyDecision decide(
@@ -35,7 +36,8 @@ public final class AnomalyDecisionEngine {
                 baselineMean,
                 baselineStdDev,
                 zScore,
-                newStreak
+                newStreak,
+                AnomalySeverity.fromZScore(zScore)
         );
         return new AnomalyDecision(newStats, Optional.of(event), rebaseline);
     }
