@@ -21,6 +21,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 
 public class AlertConsumer {
 
@@ -41,6 +42,16 @@ public class AlertConsumer {
 
     private static final Duration POLL_TIMEOUT =
             Duration.ofSeconds(1);
+
+    /*
+     * SQLState classes considered retryable:
+     *
+     * 08 - Connection Exception
+     * 53 - Insufficient Resources
+     * 57 - Operator Intervention
+     */
+    private static final Set<String> RETRYABLE_SQLSTATE_CLASSES =
+            Set.of("08", "53", "57");
 
     private static final String INSERT_ALERT_SQL = """
             INSERT INTO anomaly_alerts
@@ -147,54 +158,84 @@ public class AlertConsumer {
                 for (ConsumerRecord<String, AnomalyEvent> record
                         : records) {
 
+                    AnomalyEvent event = record.value();
+                    boolean persisted = false;
+
                     /*
-                     * Detect whether the DB connection has been lost
-                     * before attempting to persist the alert.
+                     * Keep retrying until the alert is persisted,
+                     * or we determine the failure is permanent.
                      */
-                    if (!dbConnection.isValid(2)) {
+                    while (!persisted) {
 
-                        System.err.println(
-                                "DB connection lost mid-stream. Reconnecting..."
-                        );
+                        try {
 
-                        closeQuietly(insertAlertStatement);
-                        closeQuietly(dbConnection);
+                            if (!dbConnection.isValid(2)) {
 
-                        dbConnection = connectWithRetry();
+                                closeQuietly(insertAlertStatement);
+                                closeQuietly(dbConnection);
 
-                        insertAlertStatement =
-                                dbConnection.prepareStatement(
-                                        INSERT_ALERT_SQL
+                                dbConnection = connectWithRetry();
+
+                                insertAlertStatement =
+                                        dbConnection.prepareStatement(
+                                                INSERT_ALERT_SQL
+                                        );
+                            }
+
+                            persistAlert(
+                                    insertAlertStatement,
+                                    event
+                            );
+
+                            persisted = true;
+
+                        } catch (SQLException e) {
+
+                            if (!isRetryable(e)) {
+                                System.err.println(
+                                        "PERMANENT failure persisting alert for "
+                                                + event.sensorId()
+                                                + " (SQLState=" + e.getSQLState()
+                                                + "): " + e.getMessage()
+                                                + ". Skipping this alert — dead-letter"
+                                                + " handling not yet implemented (Phase 6 Step 5)."
                                 );
+                                break;
+                            }
+
+                            System.err.println(
+                                    "Transient DB error (SQLState=" + e.getSQLState()
+                                            + ") persisting alert for " + event.sensorId()
+                                            + ": " + e.getMessage() + ". Reconnecting..."
+                            );
+
+                            closeQuietly(insertAlertStatement);
+                            closeQuietly(dbConnection);
+
+                            dbConnection = connectWithRetry();
+
+                            insertAlertStatement =
+                                    dbConnection.prepareStatement(
+                                            INSERT_ALERT_SQL
+                                    );
+                        }
                     }
 
-                    AnomalyEvent event = record.value();
-
-                    System.out.println(
-                            "ALERT | sensor=" + event.sensorId()
-                                    + " | severity=" + event.severity()
-                                    + " | value=" + event.value()
-                                    + " | baselineMean=" + event.baselineMean()
-                                    + " | baselineStdDev=" + event.baselineStdDev()
-                                    + " | zScore=" + event.zScore()
-                                    + " | consecutiveAnomalies="
-                                    + event.consecutiveAnomalies()
-                                    + " | at=" + event.readingTimestamp()
-                                    + " | partition=" + record.partition()
-                                    + " | offset=" + record.offset()
-                    );
-
-                    /*
-                     * Persist to DB before committing the Kafka offset.
-                     *
-                     * This protects against losing an alert if DB persistence
-                     * fails. The trade-off is possible duplicate inserts if
-                     * DB succeeds but Kafka offset commit fails.
-                     */
-                    persistAlert(
-                            insertAlertStatement,
-                            event
-                    );
+                    if (persisted) {
+                        System.out.println(
+                                "ALERT | sensor=" + event.sensorId()
+                                        + " | severity=" + event.severity()
+                                        + " | value=" + event.value()
+                                        + " | baselineMean=" + event.baselineMean()
+                                        + " | baselineStdDev=" + event.baselineStdDev()
+                                        + " | zScore=" + event.zScore()
+                                        + " | consecutiveAnomalies="
+                                        + event.consecutiveAnomalies()
+                                        + " | at=" + event.readingTimestamp()
+                                        + " | partition=" + record.partition()
+                                        + " | offset=" + record.offset()
+                        );
+                    }
                 }
 
                 /*
@@ -285,6 +326,17 @@ public class AlertConsumer {
                             + rowsInserted
             );
         }
+    }
+
+    private static boolean isRetryable(SQLException e) {
+
+        String sqlState = e.getSQLState();
+
+        if (sqlState == null || sqlState.length() < 2) {
+            return false;
+        }
+
+        return RETRYABLE_SQLSTATE_CLASSES.contains(sqlState.substring(0, 2));
     }
 
     private static void closeQuietly(AutoCloseable resource) {
