@@ -18,11 +18,11 @@ services:
       - kafka-data:/var/lib/kafka/data
 
   timescaledb:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb:2.29.2-pg16
     container_name: telemetry-timescaledb
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_DB: telemetry
       POSTGRES_USER: telemetry_app
@@ -33,4 +33,3 @@ services:
 volumes:
   kafka-data:
   timescale-data:
-  
