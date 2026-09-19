@@ -1,5 +1,6 @@
 package com.telemetry.platform.alerting;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -58,6 +59,13 @@ public class AlertConsumer {
                 (sensor_id, reading_timestamp, value, baseline_mean, baseline_std_dev, z_score, consecutive_anomalies, severity, kafka_partition, kafka_offset)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (kafka_partition, kafka_offset) DO NOTHING
+            """;
+
+    private static final String INSERT_ALERT_DLQ_SQL = """
+            INSERT INTO alert_dlq
+                (kafka_topic, kafka_partition, kafka_offset, sensor_id, payload, sql_state, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (kafka_topic, kafka_partition, kafka_offset) DO NOTHING
             """;
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -137,6 +145,7 @@ public class AlertConsumer {
 
         Connection dbConnection = null;
         PreparedStatement insertAlertStatement = null;
+        PreparedStatement alertDlqStatement = null;
 
         try {
             /*
@@ -150,6 +159,9 @@ public class AlertConsumer {
 
             insertAlertStatement =
                     dbConnection.prepareStatement(INSERT_ALERT_SQL);
+
+            alertDlqStatement =
+                    dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
 
             while (true) {
 
@@ -174,6 +186,7 @@ public class AlertConsumer {
                             if (!dbConnection.isValid(2)) {
 
                                 closeQuietly(insertAlertStatement);
+                                closeQuietly(alertDlqStatement);
                                 closeQuietly(dbConnection);
 
                                 dbConnection = connectWithRetry();
@@ -181,6 +194,11 @@ public class AlertConsumer {
                                 insertAlertStatement =
                                         dbConnection.prepareStatement(
                                                 INSERT_ALERT_SQL
+                                        );
+
+                                alertDlqStatement =
+                                        dbConnection.prepareStatement(
+                                                INSERT_ALERT_DLQ_SQL
                                         );
                             }
 
@@ -196,14 +214,129 @@ public class AlertConsumer {
                         } catch (SQLException e) {
 
                             if (!isRetryable(e)) {
+
                                 System.err.println(
                                         "PERMANENT failure persisting alert for "
                                                 + event.sensorId()
                                                 + " (SQLState=" + e.getSQLState()
                                                 + "): " + e.getMessage()
-                                                + ". Skipping this alert — dead-letter"
-                                                + " handling not yet implemented (Phase 6 Step 5)."
+                                                + ". Routing to dead-letter table."
                                 );
+
+                                String failureSqlState = e.getSQLState();
+                                String failureMessage = e.getMessage();
+                                boolean deadLettered = false;
+
+                                /*
+                                 * Retry the DLQ write with the same
+                                 * reconnect-on-transient-failure logic
+                                 * used for the primary insert.
+                                 */
+                                while (!deadLettered) {
+
+                                    try {
+
+                                        if (!dbConnection.isValid(2)) {
+
+                                            closeQuietly(insertAlertStatement);
+                                            closeQuietly(alertDlqStatement);
+                                            closeQuietly(dbConnection);
+
+                                            dbConnection = connectWithRetry();
+
+                                            insertAlertStatement =
+                                                    dbConnection.prepareStatement(
+                                                            INSERT_ALERT_SQL
+                                                    );
+
+                                            alertDlqStatement =
+                                                    dbConnection.prepareStatement(
+                                                            INSERT_ALERT_DLQ_SQL
+                                                    );
+                                        }
+
+                                        boolean wasNewDeadLetter = deadLetter(
+                                                alertDlqStatement,
+                                                event,
+                                                record.topic(),
+                                                record.partition(),
+                                                record.offset(),
+                                                failureSqlState,
+                                                failureMessage
+                                        );
+
+                                        System.err.println(
+                                                (wasNewDeadLetter
+                                                        ? "DEAD-LETTERED | sensor="
+                                                        : "DEAD-LETTER DUPLICATE | sensor=")
+                                                        + event.sensorId()
+                                                        + " | topic=" + record.topic()
+                                                        + " | partition=" + record.partition()
+                                                        + " | offset=" + record.offset()
+                                        );
+
+                                        deadLettered = true;
+
+                                    } catch (JsonProcessingException je) {
+
+                                        System.err.println(
+                                                "FATAL: could not serialize event for"
+                                                        + " dead-letter capture, sensor="
+                                                        + event.sensorId()
+                                                        + ", partition=" + record.partition()
+                                                        + ", offset=" + record.offset()
+                                                        + ": " + je.getMessage()
+                                                        + ". This alert is permanently lost."
+                                        );
+
+                                        deadLettered = true;
+
+                                    } catch (SQLException dlqEx) {
+
+                                        if (!isRetryable(dlqEx)) {
+
+                                            System.err.println(
+                                                    "FATAL: dead-letter insert itself"
+                                                            + " failed permanently (SQLState="
+                                                            + dlqEx.getSQLState() + "): "
+                                                            + dlqEx.getMessage()
+                                                            + ". This alert is permanently lost."
+                                            );
+
+                                            deadLettered = true;
+
+                                        } else {
+
+                                            System.err.println(
+                                                    "Transient DB error (SQLState="
+                                                            + dlqEx.getSQLState()
+                                                            + ") persisting to dead-letter table: "
+                                                            + dlqEx.getMessage() + ". Reconnecting..."
+                                            );
+
+                                            closeQuietly(insertAlertStatement);
+                                            closeQuietly(alertDlqStatement);
+                                            closeQuietly(dbConnection);
+
+                                            dbConnection = connectWithRetry();
+
+                                            insertAlertStatement =
+                                                    dbConnection.prepareStatement(
+                                                            INSERT_ALERT_SQL
+                                                    );
+
+                                            alertDlqStatement =
+                                                    dbConnection.prepareStatement(
+                                                            INSERT_ALERT_DLQ_SQL
+                                                    );
+                                        }
+                                    }
+                                }
+
+                                /*
+                                 * The record has either been successfully
+                                 * dead-lettered or could not be captured.
+                                 */
                                 break;
                             }
 
@@ -214,6 +347,7 @@ public class AlertConsumer {
                             );
 
                             closeQuietly(insertAlertStatement);
+                            closeQuietly(alertDlqStatement);
                             closeQuietly(dbConnection);
 
                             dbConnection = connectWithRetry();
@@ -221,6 +355,11 @@ public class AlertConsumer {
                             insertAlertStatement =
                                     dbConnection.prepareStatement(
                                             INSERT_ALERT_SQL
+                                    );
+
+                            alertDlqStatement =
+                                    dbConnection.prepareStatement(
+                                            INSERT_ALERT_DLQ_SQL
                                     );
                         }
                     }
@@ -251,7 +390,7 @@ public class AlertConsumer {
 
                 /*
                  * Commit only after the entire polled batch has been
-                 * successfully persisted.
+                 * processed successfully or routed to the DLQ.
                  */
                 if (!records.isEmpty()) {
                     consumer.commitSync();
@@ -274,6 +413,7 @@ public class AlertConsumer {
         } finally {
 
             closeQuietly(insertAlertStatement);
+            closeQuietly(alertDlqStatement);
             closeQuietly(dbConnection);
 
             consumer.close();
@@ -315,6 +455,43 @@ public class AlertConsumer {
          * false = ON CONFLICT DO NOTHING fired: this exact
          *         (kafka_partition, kafka_offset) was already
          *         persisted by an earlier delivery of this record.
+         */
+        return rowsInserted == 1;
+    }
+
+    private static boolean deadLetter(
+            PreparedStatement alertDlqStatement,
+            AnomalyEvent event,
+            String kafkaTopic,
+            int kafkaPartition,
+            long kafkaOffset,
+            String sqlState,
+            String errorMessage
+    ) throws SQLException, JsonProcessingException {
+
+        String payload = OBJECT_MAPPER.writeValueAsString(event);
+
+        alertDlqStatement.setString(1, kafkaTopic);
+        alertDlqStatement.setInt(2, kafkaPartition);
+        alertDlqStatement.setLong(3, kafkaOffset);
+        alertDlqStatement.setString(4, event.sensorId());
+        alertDlqStatement.setString(5, payload);
+        alertDlqStatement.setString(6, sqlState);
+        alertDlqStatement.setString(7, errorMessage);
+
+        int rowsInserted = alertDlqStatement.executeUpdate();
+
+        if (rowsInserted > 1) {
+            throw new SQLException(
+                    "Expected to insert at most 1 dead-letter row, but inserted " + rowsInserted
+            );
+        }
+
+        /*
+         * true  = this failure was captured as a new dead-letter row.
+         * false = ON CONFLICT DO NOTHING fired: this exact Kafka
+         *         record was already dead-lettered by an earlier
+         *         delivery attempt.
          */
         return rowsInserted == 1;
     }
