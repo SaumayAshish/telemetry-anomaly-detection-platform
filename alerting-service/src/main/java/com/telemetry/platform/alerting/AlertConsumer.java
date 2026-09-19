@@ -55,8 +55,9 @@ public class AlertConsumer {
 
     private static final String INSERT_ALERT_SQL = """
             INSERT INTO anomaly_alerts
-                (sensor_id, reading_timestamp, value, baseline_mean, baseline_std_dev, z_score, consecutive_anomalies, severity)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (sensor_id, reading_timestamp, value, baseline_mean, baseline_std_dev, z_score, consecutive_anomalies, severity, kafka_partition, kafka_offset)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (kafka_partition, kafka_offset) DO NOTHING
             """;
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -160,6 +161,7 @@ public class AlertConsumer {
 
                     AnomalyEvent event = record.value();
                     boolean persisted = false;
+                    boolean wasNewInsert = false;
 
                     /*
                      * Keep retrying until the alert is persisted,
@@ -182,9 +184,11 @@ public class AlertConsumer {
                                         );
                             }
 
-                            persistAlert(
+                            wasNewInsert = persistAlert(
                                     insertAlertStatement,
-                                    event
+                                    event,
+                                    record.partition(),
+                                    record.offset()
                             );
 
                             persisted = true;
@@ -221,7 +225,7 @@ public class AlertConsumer {
                         }
                     }
 
-                    if (persisted) {
+                    if (persisted && wasNewInsert) {
                         System.out.println(
                                 "ALERT | sensor=" + event.sensorId()
                                         + " | severity=" + event.severity()
@@ -234,6 +238,13 @@ public class AlertConsumer {
                                         + " | at=" + event.readingTimestamp()
                                         + " | partition=" + record.partition()
                                         + " | offset=" + record.offset()
+                        );
+                    } else if (persisted) {
+                        System.out.println(
+                                "DUPLICATE | sensor=" + event.sensorId()
+                                        + " | partition=" + record.partition()
+                                        + " | offset=" + record.offset()
+                                        + " | already persisted — skipping (idempotent no-op)."
                         );
                     }
                 }
@@ -273,59 +284,39 @@ public class AlertConsumer {
         }
     }
 
-    private static void persistAlert(
+    private static boolean persistAlert(
             PreparedStatement insertAlertStatement,
-            AnomalyEvent event) throws SQLException {
+            AnomalyEvent event,
+            int kafkaPartition,
+            long kafkaOffset
+    ) throws SQLException {
 
-        insertAlertStatement.setString(
-                1,
-                event.sensorId()
-        );
+        insertAlertStatement.setString(1, event.sensorId());
+        insertAlertStatement.setTimestamp(2, Timestamp.from(event.readingTimestamp()));
+        insertAlertStatement.setDouble(3, event.value());
+        insertAlertStatement.setDouble(4, event.baselineMean());
+        insertAlertStatement.setDouble(5, event.baselineStdDev());
+        insertAlertStatement.setDouble(6, event.zScore());
+        insertAlertStatement.setLong(7, event.consecutiveAnomalies());
+        insertAlertStatement.setString(8, event.severity().name());
+        insertAlertStatement.setInt(9, kafkaPartition);
+        insertAlertStatement.setLong(10, kafkaOffset);
 
-        insertAlertStatement.setTimestamp(
-                2,
-                Timestamp.from(event.readingTimestamp())
-        );
+        int rowsInserted = insertAlertStatement.executeUpdate();
 
-        insertAlertStatement.setDouble(
-                3,
-                event.value()
-        );
-
-        insertAlertStatement.setDouble(
-                4,
-                event.baselineMean()
-        );
-
-        insertAlertStatement.setDouble(
-                5,
-                event.baselineStdDev()
-        );
-
-        insertAlertStatement.setDouble(
-                6,
-                event.zScore()
-        );
-
-        insertAlertStatement.setLong(
-                7,
-                event.consecutiveAnomalies()
-        );
-
-        insertAlertStatement.setString(
-                8,
-                event.severity().name()
-        );
-
-        int rowsInserted =
-                insertAlertStatement.executeUpdate();
-
-        if (rowsInserted != 1) {
+        if (rowsInserted > 1) {
             throw new SQLException(
-                    "Expected to insert exactly 1 row, but inserted "
-                            + rowsInserted
+                    "Expected to insert at most 1 row, but inserted " + rowsInserted
             );
         }
+
+        /*
+         * true  = this was a new alert, actually inserted.
+         * false = ON CONFLICT DO NOTHING fired: this exact
+         *         (kafka_partition, kafka_offset) was already
+         *         persisted by an earlier delivery of this record.
+         */
+        return rowsInserted == 1;
     }
 
     private static boolean isRetryable(SQLException e) {
