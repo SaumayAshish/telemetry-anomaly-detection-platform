@@ -58,6 +58,12 @@
                 <version>42.7.13</version>
             </dependency>
 
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-csv</artifactId>
+                <version>1.14.1</version>
+            </dependency>
+
         </dependencies>
     </dependencyManagement>
 
