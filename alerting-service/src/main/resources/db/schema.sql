@@ -11,3 +11,6 @@ CREATE TABLE IF NOT EXISTS anomaly_alerts (
     CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
     ingested_at            TIMESTAMPTZ       NOT NULL DEFAULT now()
     );
+
+CREATE INDEX IF NOT EXISTS idx_anomaly_alerts_sensor_id
+    ON anomaly_alerts (sensor_id);
