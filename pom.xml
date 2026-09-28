@@ -24,6 +24,7 @@
         <module>ingestion-service</module>
         <module>stream-processing-service</module>
         <module>alerting-service</module>
+        <module>api-service</module>
     </modules>
 
     <dependencyManagement>
