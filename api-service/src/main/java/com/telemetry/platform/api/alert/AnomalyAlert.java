@@ -1,10 +1,14 @@
 package com.telemetry.platform.api.alert;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
@@ -19,6 +23,14 @@ public class AnomalyAlert {
 
     @Column(name = "sensor_id", nullable = false)
     private String sensorId;
+
+    // Read-only: sensorId above remains the column Hibernate writes on insert/update.
+    // This association exists to navigate to the full Sensor row lazily, without
+    // duplicating the join-column mapping as writable in two places.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sensor_id", insertable = false, updatable = false)
+    @JsonIgnore
+    private Sensor sensor;
 
     @Column(name = "value", nullable = false)
     private Double value;
@@ -51,6 +63,7 @@ public class AnomalyAlert {
 
     public Long getId() { return id; }
     public String getSensorId() { return sensorId; }
+    public Sensor getSensor() { return sensor; }
     public Double getValue() { return value; }
     public Double getBaselineMean() { return baselineMean; }
     public Double getBaselineStdDev() { return baselineStdDev; }
