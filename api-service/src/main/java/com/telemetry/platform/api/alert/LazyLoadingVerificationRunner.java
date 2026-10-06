@@ -18,7 +18,7 @@ public class LazyLoadingVerificationRunner implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) {
-        List<AnomalyAlert> alerts = repository.findAll();
+        List<AnomalyAlert> alerts = repository.findAllWithSensor();
         if (alerts.isEmpty()) {
             System.out.println("No alerts found - skipping lazy-loading verification.");
             return;
