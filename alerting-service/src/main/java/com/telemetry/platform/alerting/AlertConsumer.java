@@ -6,23 +6,38 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.telemetry.platform.events.AnomalyEvent;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.errors.WakeupException;
-import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class AlertConsumer {
 
@@ -41,6 +56,24 @@ public class AlertConsumer {
     private static final int BACKOFF_MULTIPLIER = 2;
     private static final long MAX_BACKOFF_MS = 30_000;
 
+    // How often connectWithRetry()'s backoff sleep checks for a shutdown
+    // signal. Smaller = faster shutdown response, more wakeups. 200ms is a
+    // reasonable balance - worst-case shutdown latency during a reconnect
+    // backoff drops from up to MAX_BACKOFF_MS (30s) to ~200ms.
+    private static final long SHUTDOWN_CHECK_INTERVAL_MS = 200;
+
+    // Set by the shutdown hook thread, read by the main thread inside
+    // sleepUnlessShuttingDown(). Declared volatile so the main thread is
+    // guaranteed to observe the write made by the shutdown hook thread -
+    // without it, the JIT/CPU would be free to cache a stale read and the
+    // main thread might never notice the flag changed.
+    private static volatile boolean shuttingDown = false;
+
+    private static final ValidatorFactory VALIDATOR_FACTORY =
+            Validation.buildDefaultValidatorFactory();
+    private static final Validator VALIDATOR =
+            VALIDATOR_FACTORY.getValidator();
+
     private static final Duration POLL_TIMEOUT =
             Duration.ofSeconds(1);
 
@@ -53,6 +86,15 @@ public class AlertConsumer {
      */
     private static final Set<String> RETRYABLE_SQLSTATE_CLASSES =
             Set.of("08", "53", "57");
+
+    // Hardcoded for local-dev simplicity, same caveat as DB_URL above -
+    // revisit before Phase 10 (e.g. make this configurable, rotate/size-cap
+    // the file, or replace with a proper local WAL).
+    //
+    // This is the last-resort sink for failures that survive a non-retryable
+    // DLQ-table write failure: if even this file write fails, there is no
+    // further fallback and the consumer is allowed to crash loudly.
+    private static final Path DLQ_FALLBACK_FILE = Paths.get("dlq-fallback.jsonl");
 
     private static final String INSERT_ALERT_SQL = """
             INSERT INTO anomaly_alerts
@@ -81,7 +123,7 @@ public class AlertConsumer {
         );
     }
 
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) {
 
         Properties props = new Properties();
         props.put(
@@ -101,26 +143,22 @@ public class AlertConsumer {
                 false
         );
 
-        Deserializer<AnomalyEvent> valueDeserializer =
-                (topic, bytes) -> {
-                    try {
-                        return OBJECT_MAPPER.readValue(
-                                bytes,
-                                AnomalyEvent.class
-                        );
-                    } catch (Exception e) {
-                        throw new RuntimeException(
-                                "Failed to deserialize AnomalyEvent",
-                                e
-                        );
-                    }
-                };
-
-        KafkaConsumer<String, AnomalyEvent> consumer =
+        /*
+         * Both key and value are consumed as plain String. Kafka's client
+         * calls the deserializer INSIDE consumer.poll() itself, before our
+         * loop below even starts - an exception thrown there would escape
+         * every try/catch in this method and crash the process (this is
+         * exactly what happened with a Deserializer<AnomalyEvent> that let
+         * Jackson exceptions propagate). StringDeserializer can't fail in
+         * that way, so parsing AnomalyEvent out of the raw String is done
+         * explicitly inside the loop instead, where it can be caught and
+         * routed to the dead-letter path like any other failure.
+         */
+        KafkaConsumer<String, String> consumer =
                 new KafkaConsumer<>(
                         props,
                         new StringDeserializer(),
-                        valueDeserializer
+                        new StringDeserializer()
                 );
 
         consumer.subscribe(List.of(ANOMALY_TOPIC));
@@ -132,6 +170,14 @@ public class AlertConsumer {
                     System.out.println(
                             "Shutdown signal received - waking up consumer..."
                     );
+
+                    /*
+                     * Set BEFORE wakeup(), not after: sleepUnlessShuttingDown()
+                     * checks this flag at the top of each 200ms increment, so
+                     * it needs to already be true by the time the main thread
+                     * next checks it, however it's currently blocked.
+                     */
+                    shuttingDown = true;
 
                     consumer.wakeup();
 
@@ -165,15 +211,293 @@ public class AlertConsumer {
 
             while (true) {
 
-                ConsumerRecords<String, AnomalyEvent> records =
+                ConsumerRecords<String, String> records =
                         consumer.poll(POLL_TIMEOUT);
 
-                for (ConsumerRecord<String, AnomalyEvent> record
+                for (ConsumerRecord<String, String> record
                         : records) {
 
-                    AnomalyEvent event = record.value();
+                    String rawPayload = record.value();
+                    AnomalyEvent event;
                     boolean persisted = false;
                     boolean wasNewInsert = false;
+
+                    /*
+                     * Deserialization boundary.
+                     *
+                     * See the comment on the StringDeserializer setup
+                     * above for why this is explicit rather than wired
+                     * into Kafka's Deserializer plugin interface. A
+                     * message that fails here never reached a valid
+                     * AnomalyEvent, so there is no sensorId to report -
+                     * it's dead-lettered as "UNKNOWN" and the raw text
+                     * is preserved as-is for later inspection.
+                     */
+                    try {
+
+                        event = OBJECT_MAPPER.readValue(
+                                rawPayload,
+                                AnomalyEvent.class
+                        );
+
+                    } catch (JsonProcessingException deserializationFailure) {
+
+                        System.err.println(
+                                "DESERIALIZATION FAILURE | partition=" + record.partition()
+                                        + " | offset=" + record.offset()
+                                        + " | payload=" + rawPayload
+                                        + " | cause=" + deserializationFailure.getMessage()
+                                        + ". Routing to dead-letter table."
+                        );
+
+                        boolean deadLettered = false;
+
+                        while (!deadLettered) {
+
+                            try {
+
+                                if (!dbConnection.isValid(2)) {
+
+                                    closeQuietly(insertAlertStatement);
+                                    closeQuietly(alertDlqStatement);
+                                    closeQuietly(dbConnection);
+
+                                    dbConnection = connectWithRetry();
+
+                                    insertAlertStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_SQL
+                                            );
+
+                                    alertDlqStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_DLQ_SQL
+                                            );
+                                }
+
+                                boolean wasNewDeadLetter = deadLetter(
+                                        alertDlqStatement,
+                                        "UNKNOWN",
+                                        rawPayload,
+                                        record.topic(),
+                                        record.partition(),
+                                        record.offset(),
+                                        "DESERIALIZATION",
+                                        deserializationFailure.getMessage()
+                                );
+
+                                System.err.println(
+                                        (wasNewDeadLetter
+                                                ? "DEAD-LETTERED | sensor=UNKNOWN"
+                                                : "DEAD-LETTER DUPLICATE | sensor=UNKNOWN")
+                                                + " | topic=" + record.topic()
+                                                + " | partition=" + record.partition()
+                                                + " | offset=" + record.offset()
+                                );
+
+                                deadLettered = true;
+
+                            } catch (SQLException dlqEx) {
+
+                                if (!isRetryable(dlqEx)) {
+
+                                    writeFallbackRecord(
+                                            "UNKNOWN",
+                                            rawPayload,
+                                            record.topic(),
+                                            record.partition(),
+                                            record.offset(),
+                                            "DESERIALIZATION",
+                                            deserializationFailure.getMessage(),
+                                            dlqEx
+                                    );
+
+                                    deadLettered = true;
+
+                                } else {
+
+                                    System.err.println(
+                                            "Transient DB error (SQLState="
+                                                    + dlqEx.getSQLState()
+                                                    + ") persisting to dead-letter table: "
+                                                    + dlqEx.getMessage() + ". Reconnecting..."
+                                    );
+
+                                    closeQuietly(insertAlertStatement);
+                                    closeQuietly(alertDlqStatement);
+                                    closeQuietly(dbConnection);
+
+                                    dbConnection = connectWithRetry();
+
+                                    insertAlertStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_SQL
+                                            );
+
+                                    alertDlqStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_DLQ_SQL
+                                            );
+                                }
+                            }
+                        }
+
+                        /*
+                         * This record could not even be parsed into an
+                         * AnomalyEvent. It has either been dead-lettered
+                         * or could not be captured. Either way, it must
+                         * never reach Bean Validation or persistAlert().
+                         */
+                        continue;
+                    }
+
+                    /*
+                     * Bean Validation boundary.
+                     *
+                     * AnomalyEvent was successfully deserialized (it's
+                     * structurally valid JSON matching the record shape),
+                     * but nothing has yet checked whether its VALUES make
+                     * business sense. There is no Spring/@KafkaListener
+                     * machinery in this module to do this automatically,
+                     * so it's invoked explicitly, right here, before the
+                     * event is allowed anywhere near persistAlert().
+                     */
+                    Set<ConstraintViolation<AnomalyEvent>> violations =
+                            VALIDATOR.validate(event);
+
+                    if (!violations.isEmpty()) {
+
+                        String violationSummary = violations.stream()
+                                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                                .collect(Collectors.joining("; "));
+
+                        System.err.println(
+                                "VALIDATION FAILURE | sensor=" + event.sensorId()
+                                        + " | partition=" + record.partition()
+                                        + " | offset=" + record.offset()
+                                        + " | violations=[" + violationSummary + "]"
+                                        + ". Routing to dead-letter table."
+                        );
+
+                        String payload;
+
+                        try {
+                            payload = OBJECT_MAPPER.writeValueAsString(event);
+                        } catch (JsonProcessingException je) {
+
+                            System.err.println(
+                                    "FATAL: could not serialize event for"
+                                            + " dead-letter capture after validation"
+                                            + " failure, sensor=" + event.sensorId()
+                                            + ", partition=" + record.partition()
+                                            + ", offset=" + record.offset()
+                                            + ": " + je.getMessage()
+                                            + ". This alert is permanently lost."
+                            );
+
+                            continue;
+                        }
+
+                        boolean deadLettered = false;
+
+                        while (!deadLettered) {
+
+                            try {
+
+                                if (!dbConnection.isValid(2)) {
+
+                                    closeQuietly(insertAlertStatement);
+                                    closeQuietly(alertDlqStatement);
+                                    closeQuietly(dbConnection);
+
+                                    dbConnection = connectWithRetry();
+
+                                    insertAlertStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_SQL
+                                            );
+
+                                    alertDlqStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_DLQ_SQL
+                                            );
+                                }
+
+                                boolean wasNewDeadLetter = deadLetter(
+                                        alertDlqStatement,
+                                        event.sensorId(),
+                                        payload,
+                                        record.topic(),
+                                        record.partition(),
+                                        record.offset(),
+                                        "VALIDATION",
+                                        violationSummary
+                                );
+
+                                System.err.println(
+                                        (wasNewDeadLetter
+                                                ? "DEAD-LETTERED | sensor="
+                                                : "DEAD-LETTER DUPLICATE | sensor=")
+                                                + event.sensorId()
+                                                + " | topic=" + record.topic()
+                                                + " | partition=" + record.partition()
+                                                + " | offset=" + record.offset()
+                                );
+
+                                deadLettered = true;
+
+                            } catch (SQLException dlqEx) {
+
+                                if (!isRetryable(dlqEx)) {
+
+                                    writeFallbackRecord(
+                                            event.sensorId(),
+                                            payload,
+                                            record.topic(),
+                                            record.partition(),
+                                            record.offset(),
+                                            "VALIDATION",
+                                            violationSummary,
+                                            dlqEx
+                                    );
+
+                                    deadLettered = true;
+
+                                } else {
+
+                                    System.err.println(
+                                            "Transient DB error (SQLState="
+                                                    + dlqEx.getSQLState()
+                                                    + ") persisting to dead-letter table: "
+                                                    + dlqEx.getMessage() + ". Reconnecting..."
+                                    );
+
+                                    closeQuietly(insertAlertStatement);
+                                    closeQuietly(alertDlqStatement);
+                                    closeQuietly(dbConnection);
+
+                                    dbConnection = connectWithRetry();
+
+                                    insertAlertStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_SQL
+                                            );
+
+                                    alertDlqStatement =
+                                            dbConnection.prepareStatement(
+                                                    INSERT_ALERT_DLQ_SQL
+                                            );
+                                }
+                            }
+                        }
+
+                        /*
+                         * This record failed validation and has either
+                         * been dead-lettered or could not be captured.
+                         * Either way, it must never reach persistAlert().
+                         */
+                        continue;
+                    }
 
                     /*
                      * Keep retrying until the alert is persisted,
@@ -225,6 +549,25 @@ public class AlertConsumer {
 
                                 String failureSqlState = e.getSQLState();
                                 String failureMessage = e.getMessage();
+                                String failurePayload;
+
+                                try {
+                                    failurePayload = OBJECT_MAPPER.writeValueAsString(event);
+                                } catch (JsonProcessingException je) {
+
+                                    System.err.println(
+                                            "FATAL: could not serialize event for"
+                                                    + " dead-letter capture, sensor="
+                                                    + event.sensorId()
+                                                    + ", partition=" + record.partition()
+                                                    + ", offset=" + record.offset()
+                                                    + ": " + je.getMessage()
+                                                    + ". This alert is permanently lost."
+                                    );
+
+                                    break;
+                                }
+
                                 boolean deadLettered = false;
 
                                 /*
@@ -257,7 +600,8 @@ public class AlertConsumer {
 
                                         boolean wasNewDeadLetter = deadLetter(
                                                 alertDlqStatement,
-                                                event,
+                                                event.sensorId(),
+                                                failurePayload,
                                                 record.topic(),
                                                 record.partition(),
                                                 record.offset(),
@@ -277,30 +621,19 @@ public class AlertConsumer {
 
                                         deadLettered = true;
 
-                                    } catch (JsonProcessingException je) {
-
-                                        System.err.println(
-                                                "FATAL: could not serialize event for"
-                                                        + " dead-letter capture, sensor="
-                                                        + event.sensorId()
-                                                        + ", partition=" + record.partition()
-                                                        + ", offset=" + record.offset()
-                                                        + ": " + je.getMessage()
-                                                        + ". This alert is permanently lost."
-                                        );
-
-                                        deadLettered = true;
-
                                     } catch (SQLException dlqEx) {
 
                                         if (!isRetryable(dlqEx)) {
 
-                                            System.err.println(
-                                                    "FATAL: dead-letter insert itself"
-                                                            + " failed permanently (SQLState="
-                                                            + dlqEx.getSQLState() + "): "
-                                                            + dlqEx.getMessage()
-                                                            + ". This alert is permanently lost."
+                                            writeFallbackRecord(
+                                                    event.sensorId(),
+                                                    failurePayload,
+                                                    record.topic(),
+                                                    record.partition(),
+                                                    record.offset(),
+                                                    failureSqlState,
+                                                    failureMessage,
+                                                    dlqEx
                                             );
 
                                             deadLettered = true;
@@ -403,6 +736,12 @@ public class AlertConsumer {
                     "Consumer loop interrupted for shutdown, as expected."
             );
 
+        } catch (InterruptedException e) {
+
+            System.out.println(
+                    "Consumer interrupted during reconnect backoff for shutdown, as expected."
+            );
+
         } catch (SQLException e) {
 
             throw new RuntimeException(
@@ -461,20 +800,19 @@ public class AlertConsumer {
 
     private static boolean deadLetter(
             PreparedStatement alertDlqStatement,
-            AnomalyEvent event,
+            String sensorId,
+            String payload,
             String kafkaTopic,
             int kafkaPartition,
             long kafkaOffset,
             String sqlState,
             String errorMessage
-    ) throws SQLException, JsonProcessingException {
-
-        String payload = OBJECT_MAPPER.writeValueAsString(event);
+    ) throws SQLException {
 
         alertDlqStatement.setString(1, kafkaTopic);
         alertDlqStatement.setInt(2, kafkaPartition);
         alertDlqStatement.setLong(3, kafkaOffset);
-        alertDlqStatement.setString(4, event.sensorId());
+        alertDlqStatement.setString(4, sensorId);
         alertDlqStatement.setString(5, payload);
         alertDlqStatement.setString(6, sqlState);
         alertDlqStatement.setString(7, errorMessage);
@@ -494,6 +832,82 @@ public class AlertConsumer {
          *         delivery attempt.
          */
         return rowsInserted == 1;
+    }
+
+    /**
+     * Last-resort persistence when the dead-letter TABLE write itself fails
+     * for a non-retryable reason (e.g. a constraint violation unrelated to
+     * connectivity - retrying won't fix it). Appends the failed record to a
+     * local JSON-Lines file so it is not silently lost even though the
+     * database rejected it.
+     *
+     * If even this file write fails (disk full, permissions, etc.), there
+     * is no further fallback: this is deliberately allowed to propagate as
+     * an unchecked exception so the consumer crashes loudly rather than
+     * quietly losing data.
+     */
+    private static void writeFallbackRecord(
+            String sensorId,
+            String payload,
+            String kafkaTopic,
+            int kafkaPartition,
+            long kafkaOffset,
+            String sqlState,
+            String errorMessage,
+            SQLException dlqWriteFailure
+    ) {
+        try {
+            Map<String, Object> fallbackRecord = new LinkedHashMap<>();
+            fallbackRecord.put("kafkaTopic", kafkaTopic);
+            fallbackRecord.put("kafkaPartition", kafkaPartition);
+            fallbackRecord.put("kafkaOffset", kafkaOffset);
+            fallbackRecord.put("sensorId", sensorId);
+            fallbackRecord.put("payload", payload);
+            fallbackRecord.put("sqlState", sqlState);
+            fallbackRecord.put("errorMessage", errorMessage);
+            fallbackRecord.put("dlqWriteFailureSqlState", dlqWriteFailure.getSQLState());
+            fallbackRecord.put("dlqWriteFailureReason", dlqWriteFailure.getMessage());
+            fallbackRecord.put("failedAt", Instant.now().toString());
+
+            String line = OBJECT_MAPPER.writeValueAsString(fallbackRecord) + System.lineSeparator();
+
+            try (FileChannel channel = FileChannel.open(
+                    DLQ_FALLBACK_FILE,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND,
+                    StandardOpenOption.WRITE
+            )) {
+                channel.write(ByteBuffer.wrap(line.getBytes(StandardCharsets.UTF_8)));
+                channel.force(true); // fsync - survive a JVM/OS crash, not just an unflushed buffer
+            }
+
+            System.err.println(
+                    "DLQ WRITE FAILED | sensor=" + sensorId
+                            + " | partition=" + kafkaPartition
+                            + " | offset=" + kafkaOffset
+                            + " | cause=" + dlqWriteFailure.getMessage()
+                            + " | fell back to local file " + DLQ_FALLBACK_FILE
+            );
+
+        } catch (IOException | RuntimeException fallbackFailure) {
+
+            System.err.println(
+                    "FATAL: DLQ table write AND local file fallback both failed"
+                            + " for sensor=" + sensorId
+                            + ", partition=" + kafkaPartition
+                            + ", offset=" + kafkaOffset
+                            + ". dlqCause=" + dlqWriteFailure.getMessage()
+                            + ", fallbackCause=" + fallbackFailure.getMessage()
+                            + ". This alert is permanently lost."
+            );
+
+            throw new UncheckedIOException(
+                    "Unable to persist failed message anywhere - DB and local fallback both failed",
+                    fallbackFailure instanceof IOException ioFailure
+                            ? ioFailure
+                            : new IOException(fallbackFailure)
+            );
+        }
     }
 
     private static boolean isRetryable(SQLException e) {
@@ -555,7 +969,7 @@ public class AlertConsumer {
                                 + "ms..."
                 );
 
-                Thread.sleep(backoffMs);
+                sleepUnlessShuttingDown(backoffMs);
 
                 /*
                  * Exponential backoff:
@@ -567,6 +981,40 @@ public class AlertConsumer {
                         MAX_BACKOFF_MS
                 );
             }
+        }
+    }
+
+    /**
+     * Sleeps for up to durationMs, checking the shutdown flag every
+     * SHUTDOWN_CHECK_INTERVAL_MS and returning early - by throwing
+     * InterruptedException - if a shutdown signal arrived mid-backoff.
+     *
+     * Plain Thread.sleep(durationMs) would block for the full duration,
+     * up to MAX_BACKOFF_MS (30s), regardless of a shutdown request:
+     * consumer.wakeup() only affects a thread blocked inside
+     * consumer.poll(), not one blocked in Thread.sleep(). Without this,
+     * SIGTERM/Ctrl+C during a reconnect backoff would leave the process
+     * unresponsive for up to 30 seconds - long enough for an orchestrator
+     * like Kubernetes to send SIGKILL before a clean shutdown completes.
+     */
+    private static void sleepUnlessShuttingDown(long durationMs)
+            throws InterruptedException {
+
+        long remainingMs = durationMs;
+
+        while (remainingMs > 0) {
+
+            if (shuttingDown) {
+                throw new InterruptedException(
+                        "Shutdown requested during reconnect backoff"
+                );
+            }
+
+            long thisSleepMs = Math.min(remainingMs, SHUTDOWN_CHECK_INTERVAL_MS);
+
+            Thread.sleep(thisSleepMs);
+
+            remainingMs -= thisSleepMs;
         }
     }
 }
