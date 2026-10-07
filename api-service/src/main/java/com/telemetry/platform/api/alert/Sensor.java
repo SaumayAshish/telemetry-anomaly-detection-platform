@@ -32,4 +32,5 @@ public class Sensor {
     public String getLocation() { return location; }
     public LocalDate getInstallDate() { return installDate; }
     public String getModel() { return model; }
+
 }

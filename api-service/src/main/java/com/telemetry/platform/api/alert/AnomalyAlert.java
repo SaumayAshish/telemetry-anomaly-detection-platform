@@ -45,7 +45,7 @@ public class AnomalyAlert {
     private Double zScore;
 
     @Column(name = "consecutive_anomalies", nullable = false)
-    private Integer consecutiveAnomalies;
+    private Long consecutiveAnomalies;
 
     @Column(name = "severity", nullable = false)
     private String severity;
@@ -68,7 +68,7 @@ public class AnomalyAlert {
     public Double getBaselineMean() { return baselineMean; }
     public Double getBaselineStdDev() { return baselineStdDev; }
     public Double getZScore() { return zScore; }
-    public Integer getConsecutiveAnomalies() { return consecutiveAnomalies; }
+    public Long getConsecutiveAnomalies() { return consecutiveAnomalies; }
     public String getSeverity() { return severity; }
     public Instant getReadingTimestamp() { return readingTimestamp; }
     public Instant getIngestedAt() { return ingestedAt; }
