@@ -19,7 +19,7 @@ public class AnomalyAlertController {
     }
 
     @GetMapping
-    public List<AnomalyAlert> getAlerts(
+    public List<AlertResponse> getAlerts(
             @RequestParam(name = "sensorId", required = false) String sensorId,
             @RequestParam(name = "severity", required = false) String severity,
             @RequestParam(name = "from", required = false) Instant from,
