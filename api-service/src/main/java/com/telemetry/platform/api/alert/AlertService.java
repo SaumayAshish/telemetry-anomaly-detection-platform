@@ -3,7 +3,6 @@ package com.telemetry.platform.api.alert;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.List;
 
 @Service
@@ -16,19 +15,25 @@ public class AlertService {
     }
 
     @Transactional(readOnly = true)
-    public List<AlertResponse> findAlerts(String sensorId, String severity, Instant from, Instant to) {
+    public List<AlertResponse> findAlerts(AlertQuery query) {
+
+        String severity = query.normalizedSeverity();
         List<AnomalyAlert> alerts;
-        if (from != null && to != null) {
-            alerts = repository.findByReadingTimestampBetween(from, to);
-        } else if (sensorId != null && severity != null) {
-            alerts = repository.findBySensorIdAndSeverity(sensorId, severity);
-        } else if (sensorId != null) {
-            alerts = repository.findBySensorId(sensorId);
+
+        // AlertQuery validation guarantees a time range arrives alone and complete,
+        // so no filter is silently ignored here.
+        if (query.from() != null && query.to() != null) {
+            alerts = repository.findByReadingTimestampBetween(query.from(), query.to());
+        } else if (query.sensorId() != null && severity != null) {
+            alerts = repository.findBySensorIdAndSeverity(query.sensorId(), severity);
+        } else if (query.sensorId() != null) {
+            alerts = repository.findBySensorId(query.sensorId());
         } else if (severity != null) {
             alerts = repository.findBySeverity(severity);
         } else {
             alerts = repository.findAllWithSensor();
         }
+
         return alerts.stream().map(AlertResponse::from).toList();
     }
 }
