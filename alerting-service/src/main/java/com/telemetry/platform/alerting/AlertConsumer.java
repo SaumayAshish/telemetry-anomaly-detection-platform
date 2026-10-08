@@ -44,17 +44,10 @@ public class AlertConsumer {
     private static final String ANOMALY_TOPIC = "telemetry.sensor.anomalies.v1";
     private static final String GROUP_ID = "alerting-service-group";
 
-    // Hardcoded for local-dev simplicity.
-    // Not production practice - these belong in environment variables
-    // or a secrets manager. Revisit before Phase 10.
-    private static final String DB_URL =
-            "jdbc:postgresql://localhost:5433/telemetry";
-    private static final String DB_USER = "telemetry_app";
-    private static final String DB_PASSWORD = "localdevpassword";
-
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final int BACKOFF_MULTIPLIER = 2;
     private static final long MAX_BACKOFF_MS = 30_000;
+    private static AlertConsumerConfig config;
 
     // How often connectWithRetry()'s backoff sleep checks for a shutdown
     // signal. Smaller = faster shutdown response, more wakeups. 200ms is a
@@ -87,9 +80,6 @@ public class AlertConsumer {
     private static final Set<String> RETRYABLE_SQLSTATE_CLASSES =
             Set.of("08", "53", "57");
 
-    // Hardcoded for local-dev simplicity, same caveat as DB_URL above -
-    // revisit before Phase 10 (e.g. make this configurable, rotate/size-cap
-    // the file, or replace with a proper local WAL).
     //
     // This is the last-resort sink for failures that survive a non-retryable
     // DLQ-table write failure: if even this file write fails, there is no
@@ -125,10 +115,13 @@ public class AlertConsumer {
 
     public static void main(String[] args) {
 
+        config = AlertConsumerConfig.fromEnvironment();
+        System.out.println("Configuration loaded: " + config);
+
         Properties props = new Properties();
         props.put(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
-                "localhost:9092"
+                config.kafkaBootstrapServers()
         );
         props.put(
                 ConsumerConfig.GROUP_ID_CONFIG,
@@ -938,9 +931,9 @@ public class AlertConsumer {
 
                 Connection connection =
                         DriverManager.getConnection(
-                                DB_URL,
-                                DB_USER,
-                                DB_PASSWORD
+                                config.dbUrl(),
+                                config.dbUser(),
+                                config.dbPassword()
                         );
 
                 System.out.println(
@@ -950,6 +943,13 @@ public class AlertConsumer {
                 return connection;
 
             } catch (SQLException e) {
+                String sqlState = e.getSQLState();
+
+                if (sqlState != null && sqlState.startsWith("28")) {
+                    throw new IllegalStateException(
+                            "Database rejected the configured credentials (SQLState=" + sqlState
+                                    + "). Not retrying: " + e.getMessage(), e);
+                }
 
                 System.err.println(
                         "DB connection failed: "
