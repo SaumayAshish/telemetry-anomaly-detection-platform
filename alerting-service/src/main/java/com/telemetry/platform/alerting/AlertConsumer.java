@@ -240,7 +240,13 @@ public class AlertConsumer {
                                 AnomalyEvent.class
                         );
 
-                    } catch (JsonProcessingException deserializationFailure) {
+                        if (event == null) {
+                            throw new IllegalArgumentException(
+                                    "Payload deserialized to null (JSON null literal)"
+                            );
+                        }
+
+                    } catch (JsonProcessingException | IllegalArgumentException deserializationFailure) {
 
                         System.err.println(
                                 "DESERIALIZATION FAILURE | partition=" + record.partition()
@@ -320,7 +326,8 @@ public class AlertConsumer {
                                             "Transient DB error (SQLState="
                                                     + dlqEx.getSQLState()
                                                     + ") persisting to dead-letter table: "
-                                                    + dlqEx.getMessage() + ". Reconnecting..."
+                                                    + dlqEx.getMessage()
+                                                    + ". Reconnecting..."
                                     );
 
                                     closeQuietly(insertAlertStatement);
@@ -379,24 +386,7 @@ public class AlertConsumer {
                                         + ". Routing to dead-letter table."
                         );
 
-                        String payload;
-
-                        try {
-                            payload = OBJECT_MAPPER.writeValueAsString(event);
-                        } catch (JsonProcessingException je) {
-
-                            System.err.println(
-                                    "FATAL: could not serialize event for"
-                                            + " dead-letter capture after validation"
-                                            + " failure, sensor=" + event.sensorId()
-                                            + ", partition=" + record.partition()
-                                            + ", offset=" + record.offset()
-                                            + ": " + je.getMessage()
-                                            + ". This alert is permanently lost."
-                            );
-
-                            continue;
-                        }
+                        String payload = rawPayload;
 
                         boolean deadLettered = false;
 
