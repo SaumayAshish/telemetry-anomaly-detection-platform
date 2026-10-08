@@ -29,6 +29,7 @@
 
     <dependencyManagement>
         <dependencies>
+
             <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka-clients</artifactId>
@@ -69,6 +70,27 @@
                 <groupId>com.zaxxer</groupId>
                 <artifactId>HikariCP</artifactId>
                 <version>7.1.0</version>
+            </dependency>
+
+            <!-- Jakarta Bean Validation API -->
+            <dependency>
+                <groupId>jakarta.validation</groupId>
+                <artifactId>jakarta.validation-api</artifactId>
+                <version>3.1.1</version>
+            </dependency>
+
+            <!-- Hibernate Validator implementation -->
+            <dependency>
+                <groupId>org.hibernate.validator</groupId>
+                <artifactId>hibernate-validator</artifactId>
+                <version>9.1.3.Final</version>
+            </dependency>
+
+            <!-- Expression Language implementation required by Hibernate Validator -->
+            <dependency>
+                <groupId>org.glassfish.expressly</groupId>
+                <artifactId>expressly</artifactId>
+                <version>6.0.0</version>
             </dependency>
 
         </dependencies>
