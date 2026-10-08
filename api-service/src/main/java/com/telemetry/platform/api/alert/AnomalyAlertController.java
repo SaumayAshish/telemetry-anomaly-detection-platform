@@ -2,17 +2,14 @@ package com.telemetry.platform.api.alert;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/alerts")
@@ -38,12 +35,11 @@ public class AnomalyAlertController {
         Set<ConstraintViolation<AlertQuery>> violations = validator.validate(query);
 
         if (!violations.isEmpty()) {
-            String summary = violations.stream()
-                    .map(ConstraintViolation::getMessage)
-                    .sorted()
-                    .collect(Collectors.joining("; "));
-
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, summary);
+            throw new InvalidAlertQueryException(
+                    violations.stream()
+                            .map(ConstraintViolation::getMessage)
+                            .sorted()
+                            .toList());
         }
 
         return alertService.findAlerts(query);
