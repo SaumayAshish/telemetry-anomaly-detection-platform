@@ -15,4 +15,4 @@ Thumbs.db
 
 # Environment / secrets (we'll need this once we add config later)
 .env
-*.local.properties
+*.local.propertiesdlq-fallback.jsonl
