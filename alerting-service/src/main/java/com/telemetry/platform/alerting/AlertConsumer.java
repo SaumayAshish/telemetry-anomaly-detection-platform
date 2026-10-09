@@ -305,13 +305,8 @@ public class AlertConsumer {
 
                                 } else {
 
-                                    System.err.println(
-                                            "Transient DB error (SQLState="
-                                                    + dlqEx.getSQLState()
-                                                    + ") persisting to dead-letter table: "
-                                                    + dlqEx.getMessage()
-                                                    + ". Reconnecting..."
-                                    );
+                                    log.warn("Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
+                                            record.topic(), record.partition(), record.offset(), dlqEx.getSQLState());
 
                                     closeQuietly(insertAlertStatement);
                                     closeQuietly(alertDlqStatement);
@@ -426,12 +421,8 @@ public class AlertConsumer {
 
                                 } else {
 
-                                    System.err.println(
-                                            "Transient DB error (SQLState="
-                                                    + dlqEx.getSQLState()
-                                                    + ") persisting to dead-letter table: "
-                                                    + dlqEx.getMessage() + ". Reconnecting..."
-                                    );
+                                    log.warn("Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
+                                            record.topic(), record.partition(), record.offset(), dlqEx.getSQLState());
 
                                     closeQuietly(insertAlertStatement);
                                     closeQuietly(alertDlqStatement);
@@ -512,15 +503,9 @@ public class AlertConsumer {
                                     failurePayload = OBJECT_MAPPER.writeValueAsString(event);
                                 } catch (JsonProcessingException je) {
 
-                                    System.err.println(
-                                            "FATAL: could not serialize event for"
-                                                    + " dead-letter capture, sensor="
-                                                    + event.sensorId()
-                                                    + ", partition=" + record.partition()
-                                                    + ", offset=" + record.offset()
-                                                    + ": " + je.getMessage()
-                                                    + ". This alert is permanently lost."
-                                    );
+                                    log.error("Could not serialize event for dead-letter capture, alert permanently lost topic={} partition={} offset={} sensorId={} exception={}",
+                                            record.topic(), record.partition(), record.offset(),
+                                            safe(event.sensorId()), je.getClass().getSimpleName());
 
                                     break;
                                 }
@@ -589,12 +574,8 @@ public class AlertConsumer {
 
                                         } else {
 
-                                            System.err.println(
-                                                    "Transient DB error (SQLState="
-                                                            + dlqEx.getSQLState()
-                                                            + ") persisting to dead-letter table: "
-                                                            + dlqEx.getMessage() + ". Reconnecting..."
-                                            );
+                                            log.warn("Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
+                                                    record.topic(), record.partition(), record.offset(), dlqEx.getSQLState());
 
                                             closeQuietly(insertAlertStatement);
                                             closeQuietly(alertDlqStatement);
@@ -622,11 +603,8 @@ public class AlertConsumer {
                                 break;
                             }
 
-                            System.err.println(
-                                    "Transient DB error (SQLState=" + e.getSQLState()
-                                            + ") persisting alert for " + event.sensorId()
-                                            + ": " + e.getMessage() + ". Reconnecting..."
-                            );
+                            log.warn("Transient database error persisting alert, reconnecting topic={} partition={} offset={} sqlState={}",
+                                    record.topic(), record.partition(), record.offset(), e.getSQLState());
 
                             closeQuietly(insertAlertStatement);
                             closeQuietly(alertDlqStatement);
@@ -647,26 +625,12 @@ public class AlertConsumer {
                     }
 
                     if (persisted && wasNewInsert) {
-                        System.out.println(
-                                "ALERT | sensor=" + event.sensorId()
-                                        + " | severity=" + event.severity()
-                                        + " | value=" + event.value()
-                                        + " | baselineMean=" + event.baselineMean()
-                                        + " | baselineStdDev=" + event.baselineStdDev()
-                                        + " | zScore=" + event.zScore()
-                                        + " | consecutiveAnomalies="
-                                        + event.consecutiveAnomalies()
-                                        + " | at=" + event.readingTimestamp()
-                                        + " | partition=" + record.partition()
-                                        + " | offset=" + record.offset()
-                        );
+                        log.info("ALERT_PERSISTED topic={} partition={} offset={} sensorId={} severity={}",
+                                record.topic(), record.partition(), record.offset(),
+                                safe(event.sensorId()), event.severity());
                     } else if (persisted) {
-                        System.out.println(
-                                "DUPLICATE | sensor=" + event.sensorId()
-                                        + " | partition=" + record.partition()
-                                        + " | offset=" + record.offset()
-                                        + " | already persisted — skipping (idempotent no-op)."
-                        );
+                        log.info("ALERT_DUPLICATE topic={} partition={} offset={} sensorId={}",
+                                record.topic(), record.partition(), record.offset(), safe(event.sensorId()));
                     }
                 }
 
@@ -823,25 +787,15 @@ public class AlertConsumer {
                 channel.force(true); // fsync - survive a JVM/OS crash, not just an unflushed buffer
             }
 
-            System.err.println(
-                    "DLQ WRITE FAILED | sensor=" + sensorId
-                            + " | partition=" + kafkaPartition
-                            + " | offset=" + kafkaOffset
-                            + " | cause=" + dlqWriteFailure.getMessage()
-                            + " | fell back to local file " + DLQ_FALLBACK_FILE
-            );
+            log.error("DLQ_TABLE_WRITE_FAILED, fell back to local file topic={} partition={} offset={} sensorId={} sqlState={} file={}",
+                    kafkaTopic, kafkaPartition, kafkaOffset, safe(sensorId),
+                    dlqWriteFailure.getSQLState(), DLQ_FALLBACK_FILE);
 
         } catch (IOException | RuntimeException fallbackFailure) {
 
-            System.err.println(
-                    "FATAL: DLQ table write AND local file fallback both failed"
-                            + " for sensor=" + sensorId
-                            + ", partition=" + kafkaPartition
-                            + ", offset=" + kafkaOffset
-                            + ". dlqCause=" + dlqWriteFailure.getMessage()
-                            + ", fallbackCause=" + fallbackFailure.getMessage()
-                            + ". This alert is permanently lost."
-            );
+            log.error("DLQ table write AND local file fallback both failed, record permanently lost topic={} partition={} offset={} sensorId={} dlqSqlState={} fallbackException={}",
+                    kafkaTopic, kafkaPartition, kafkaOffset, safe(sensorId),
+                    dlqWriteFailure.getSQLState(), fallbackFailure.getClass().getSimpleName());
 
             throw new UncheckedIOException(
                     "Unable to persist failed message anywhere - DB and local fallback both failed",
@@ -872,10 +826,7 @@ public class AlertConsumer {
         try {
             resource.close();
         } catch (Exception e) {
-            System.err.println(
-                    "Error closing resource: "
-                            + e.getMessage()
-            );
+            log.warn("Error closing resource exception={}", e.getClass().getSimpleName());
         }
     }
 
@@ -903,18 +854,14 @@ public class AlertConsumer {
                 String sqlState = e.getSQLState();
 
                 if (sqlState != null && sqlState.startsWith("28")) {
+                    log.error("Database rejected the configured credentials sqlState={}, not retrying", sqlState);
                     throw new IllegalStateException(
                             "Database rejected the configured credentials (SQLState=" + sqlState
                                     + "). Not retrying: " + e.getMessage(), e);
                 }
 
-                System.err.println(
-                        "DB connection failed: "
-                                + e.getMessage()
-                                + ". Retrying in "
-                                + backoffMs
-                                + "ms..."
-                );
+                log.warn("Database connection failed, retrying in {} ms sqlState={}: {}",
+                        backoffMs, e.getSQLState(), e.getMessage());
 
                 sleepUnlessShuttingDown(backoffMs);
 
