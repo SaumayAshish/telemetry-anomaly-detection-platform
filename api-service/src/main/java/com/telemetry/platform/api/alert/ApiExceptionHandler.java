@@ -13,6 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.MDC;
 
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -56,7 +57,10 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception ex, HttpServletRequest request) {
 
-        String correlationId = UUID.randomUUID().toString().substring(0, 8);
+        String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY);
+        if (correlationId == null) {
+            correlationId = UUID.randomUUID().toString().substring(0, 8);
+        }
 
         // Full detail and stack trace stay on the server, tagged with the same id.
         log.error("Unhandled exception, correlationId={}, path={}",
