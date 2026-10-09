@@ -4,11 +4,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class AlertService {
 
     private final AnomalyAlertRepository repository;
+    private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
     public AlertService(AnomalyAlertRepository repository) {
         this.repository = repository;
@@ -34,6 +37,8 @@ public class AlertService {
             alerts = repository.findAllWithSensor();
         }
 
-        return alerts.stream().map(AlertResponse::from).toList();
+        List<AlertResponse> result = alerts.stream().map(AlertResponse::from).toList();
+        log.info("Alert query returned {} rows", result.size());
+        return result;
     }
 }
