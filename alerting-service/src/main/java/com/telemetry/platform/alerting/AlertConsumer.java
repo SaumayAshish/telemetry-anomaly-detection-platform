@@ -253,6 +253,8 @@ public class AlertConsumer {
                             try {
 
                                 if (!dbConnection.isValid(2)) {
+                                    log.warn("Database connection no longer valid, reconnecting topic={} partition={} offset={}",
+                                            record.topic(), record.partition(), record.offset());
 
                                     closeQuietly(insertAlertStatement);
                                     closeQuietly(alertDlqStatement);
@@ -354,6 +356,7 @@ public class AlertConsumer {
 
                         String violationSummary = violations.stream()
                                 .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                                .sorted()
                                 .collect(Collectors.joining("; "));
 
                         log.warn("Validation failed topic={} partition={} offset={} sensorId={} violations=[{}]",
@@ -369,6 +372,8 @@ public class AlertConsumer {
                             try {
 
                                 if (!dbConnection.isValid(2)) {
+                                    log.warn("Database connection no longer valid, reconnecting topic={} partition={} offset={}",
+                                            record.topic(), record.partition(), record.offset());
 
                                     closeQuietly(insertAlertStatement);
                                     closeQuietly(alertDlqStatement);
@@ -460,6 +465,8 @@ public class AlertConsumer {
                         try {
 
                             if (!dbConnection.isValid(2)) {
+                                log.warn("Database connection no longer valid, reconnecting topic={} partition={} offset={}",
+                                        record.topic(), record.partition(), record.offset());
 
                                 closeQuietly(insertAlertStatement);
                                 closeQuietly(alertDlqStatement);
@@ -522,6 +529,8 @@ public class AlertConsumer {
                                     try {
 
                                         if (!dbConnection.isValid(2)) {
+                                            log.warn("Database connection no longer valid, reconnecting topic={} partition={} offset={}",
+                                                    record.topic(), record.partition(), record.offset());
 
                                             closeQuietly(insertAlertStatement);
                                             closeQuietly(alertDlqStatement);
