@@ -242,13 +242,9 @@ public class AlertConsumer {
 
                     } catch (JsonProcessingException | IllegalArgumentException deserializationFailure) {
 
-                        System.err.println(
-                                "DESERIALIZATION FAILURE | partition=" + record.partition()
-                                        + " | offset=" + record.offset()
-                                        + " | payload=" + rawPayload
-                                        + " | cause=" + deserializationFailure.getMessage()
-                                        + ". Routing to dead-letter table."
-                        );
+                        log.warn("Deserialization failed topic={} partition={} offset={} exception={}",
+                                record.topic(), record.partition(), record.offset(),
+                                deserializationFailure.getClass().getSimpleName());
 
                         boolean deadLettered = false;
 
@@ -286,14 +282,7 @@ public class AlertConsumer {
                                         deserializationFailure.getMessage()
                                 );
 
-                                System.err.println(
-                                        (wasNewDeadLetter
-                                                ? "DEAD-LETTERED | sensor=UNKNOWN"
-                                                : "DEAD-LETTER DUPLICATE | sensor=UNKNOWN")
-                                                + " | topic=" + record.topic()
-                                                + " | partition=" + record.partition()
-                                                + " | offset=" + record.offset()
-                                );
+                                logDeadLetterOutcome(wasNewDeadLetter, record, "UNKNOWN", "DESERIALIZATION");
 
                                 deadLettered = true;
 
@@ -372,13 +361,9 @@ public class AlertConsumer {
                                 .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                                 .collect(Collectors.joining("; "));
 
-                        System.err.println(
-                                "VALIDATION FAILURE | sensor=" + event.sensorId()
-                                        + " | partition=" + record.partition()
-                                        + " | offset=" + record.offset()
-                                        + " | violations=[" + violationSummary + "]"
-                                        + ". Routing to dead-letter table."
-                        );
+                        log.warn("Validation failed topic={} partition={} offset={} sensorId={} violations=[{}]",
+                                record.topic(), record.partition(), record.offset(),
+                                safe(event.sensorId()), violationSummary);
 
                         String payload = rawPayload;
 
@@ -418,15 +403,7 @@ public class AlertConsumer {
                                         violationSummary
                                 );
 
-                                System.err.println(
-                                        (wasNewDeadLetter
-                                                ? "DEAD-LETTERED | sensor="
-                                                : "DEAD-LETTER DUPLICATE | sensor=")
-                                                + event.sensorId()
-                                                + " | topic=" + record.topic()
-                                                + " | partition=" + record.partition()
-                                                + " | offset=" + record.offset()
-                                );
+                                logDeadLetterOutcome(wasNewDeadLetter, record, event.sensorId(), "VALIDATION");
 
                                 deadLettered = true;
 
@@ -523,13 +500,9 @@ public class AlertConsumer {
 
                             if (!isRetryable(e)) {
 
-                                System.err.println(
-                                        "PERMANENT failure persisting alert for "
-                                                + event.sensorId()
-                                                + " (SQLState=" + e.getSQLState()
-                                                + "): " + e.getMessage()
-                                                + ". Routing to dead-letter table."
-                                );
+                                log.warn("Insert rejected permanently topic={} partition={} offset={} sensorId={} sqlState={}",
+                                        record.topic(), record.partition(), record.offset(),
+                                        safe(event.sensorId()), e.getSQLState());
 
                                 String failureSqlState = e.getSQLState();
                                 String failureMessage = e.getMessage();
@@ -593,15 +566,7 @@ public class AlertConsumer {
                                                 failureMessage
                                         );
 
-                                        System.err.println(
-                                                (wasNewDeadLetter
-                                                        ? "DEAD-LETTERED | sensor="
-                                                        : "DEAD-LETTER DUPLICATE | sensor=")
-                                                        + event.sensorId()
-                                                        + " | topic=" + record.topic()
-                                                        + " | partition=" + record.partition()
-                                                        + " | offset=" + record.offset()
-                                        );
+                                        logDeadLetterOutcome(wasNewDeadLetter, record, event.sensorId(), "INSERT_REJECTED");
 
                                         deadLettered = true;
 
@@ -999,4 +964,30 @@ public class AlertConsumer {
             remainingMs -= thisSleepMs;
         }
     }
+
+    private static void logDeadLetterOutcome(
+            boolean isNew,
+            ConsumerRecord<String, String> record,
+            String sensorId,
+            String reason) {
+
+        if (isNew) {
+            log.warn("DEAD_LETTERED topic={} partition={} offset={} sensorId={} reason={}",
+                    record.topic(), record.partition(), record.offset(), safe(sensorId), reason);
+        } else {
+            log.info("DEAD_LETTER_DUPLICATE topic={} partition={} offset={} sensorId={} reason={}",
+                    record.topic(), record.partition(), record.offset(), safe(sensorId), reason);
+        }
+    }
+
+    // Values from Kafka messages are untrusted: strip control characters (a newline
+    // could forge a fake log line) and cap the length.
+    private static String safe(String value) {
+        if (value == null) {
+            return "null";
+        }
+        String cleaned = value.replaceAll("\\p{Cntrl}", "_");
+        return cleaned.length() > 64 ? cleaned.substring(0, 64) + "..." : cleaned;
+    }
+
 }
