@@ -16,6 +16,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -43,6 +45,7 @@ public class AlertConsumer {
 
     private static final String ANOMALY_TOPIC = "telemetry.sensor.anomalies.v1";
     private static final String GROUP_ID = "alerting-service-group";
+    private static final Logger log = LoggerFactory.getLogger(AlertConsumer.class);
 
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final int BACKOFF_MULTIPLIER = 2;
@@ -116,7 +119,7 @@ public class AlertConsumer {
     public static void main(String[] args) {
 
         config = AlertConsumerConfig.fromEnvironment();
-        System.out.println("Configuration loaded: " + config);
+        log.info("Configuration loaded: {}", config);
 
         Properties props = new Properties();
         props.put(
@@ -160,9 +163,7 @@ public class AlertConsumer {
 
         Runtime.getRuntime().addShutdownHook(
                 new Thread(() -> {
-                    System.out.println(
-                            "Shutdown signal received - waking up consumer..."
-                    );
+                    log.info("Shutdown signal received, waking up consumer");
 
                     /*
                      * Set BEFORE wakeup(), not after: sleepUnlessShuttingDown()
@@ -715,15 +716,10 @@ public class AlertConsumer {
 
         } catch (WakeupException e) {
 
-            System.out.println(
-                    "Consumer loop interrupted for shutdown, as expected."
-            );
-
+            log.info("Consumer loop interrupted for shutdown, as expected");
         } catch (InterruptedException e) {
 
-            System.out.println(
-                    "Consumer interrupted during reconnect backoff for shutdown, as expected."
-            );
+            log.info("Consumer interrupted during reconnect backoff for shutdown, as expected");
 
         } catch (SQLException e) {
 
@@ -740,9 +736,7 @@ public class AlertConsumer {
 
             consumer.close();
 
-            System.out.println(
-                    "Consumer closed cleanly."
-            );
+            log.info("Consumer closed cleanly");;
         }
     }
 
@@ -823,7 +817,7 @@ public class AlertConsumer {
      * connectivity - retrying won't fix it). Appends the failed record to a
      * local JSON-Lines file so it is not silently lost even though the
      * database rejected it.
-     *
+     * <p>
      * If even this file write fails (disk full, permissions, etc.), there
      * is no further fallback: this is deliberately allowed to propagate as
      * an unchecked exception so the consumer crashes loudly rather than
@@ -936,9 +930,7 @@ public class AlertConsumer {
                                 config.dbPassword()
                         );
 
-                System.out.println(
-                        "Connected to database."
-                );
+                log.info("Connected to database");
 
                 return connection;
 
@@ -978,7 +970,7 @@ public class AlertConsumer {
      * Sleeps for up to durationMs, checking the shutdown flag every
      * SHUTDOWN_CHECK_INTERVAL_MS and returning early - by throwing
      * InterruptedException - if a shutdown signal arrived mid-backoff.
-     *
+     * <p>
      * Plain Thread.sleep(durationMs) would block for the full duration,
      * up to MAX_BACKOFF_MS (30s), regardless of a shutdown request:
      * consumer.wakeup() only affects a thread blocked inside
