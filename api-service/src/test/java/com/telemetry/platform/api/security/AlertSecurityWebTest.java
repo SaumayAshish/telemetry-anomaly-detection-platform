@@ -21,7 +21,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @WebMvcTest(AnomalyAlertController.class)
-@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class})
+@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class,TestJwtSupport.Config.class })
 @TestPropertySource(properties = {
         "app.security.reader-password=test-reader-pass",
         "app.security.guest-password=test-guest-pass"

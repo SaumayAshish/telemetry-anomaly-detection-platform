@@ -23,9 +23,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.telemetry.platform.api.security.TestJwtSupport;
 
 @WebMvcTest(AnomalyAlertController.class)
-@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class})
+@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class,TestJwtSupport.Config.class })
 @TestPropertySource(properties = {
         "app.security.reader-password=test-reader-pass",
         "app.security.guest-password=test-guest-pass"
