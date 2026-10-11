@@ -1,3 +1,4 @@
+
 package com.telemetry.platform.api.security;
 
 import com.telemetry.platform.api.alert.AlertService;
@@ -6,9 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,12 +25,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(AnomalyAlertController.class)
-@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class,
-        ProblemAccessDeniedHandler.class, TestJwtSupport.Config.class})
-// Needed only while SecurityConfig still has the Basic users; removed in step C.
-@TestPropertySource(properties = {
-        "app.security.reader-password=test-reader-pass",
-        "app.security.guest-password=test-guest-pass"
+@Import({
+        SecurityConfig.class,
+        ProblemAuthenticationEntryPoint.class,
+        ProblemAccessDeniedHandler.class,
+        TestJwtSupport.Config.class
 })
 class AlertJwtWebTest {
 
@@ -39,23 +39,34 @@ class AlertJwtWebTest {
     @MockitoBean
     private AlertService alertService;
 
-    private static String bearer(String token) {
-        return "Bearer " + token;
+    private static RequestPostProcessor reader() {
+        return request -> {
+            request.addHeader(
+                    "Authorization",
+                    "Bearer " + validToken(List.of("ALERT_READER"))
+            );
+            return request;
+        };
     }
 
     @Test
     void validTokenWithReaderRoleGets200() throws Exception {
         mockMvc.perform(get("/api/alerts")
-                        .header("Authorization", bearer(validToken(List.of("ALERT_READER")))))
+                        .with(reader()))
                 .andExpect(status().isOk());
     }
 
     @Test
     void expiredTokenGets401() throws Exception {
-        String token = token(SIGNING_KEY, ISSUER, List.of("ALERT_READER"),
-                Instant.now().minusSeconds(3600));
+        String expiredToken = token(
+                SIGNING_KEY,
+                ISSUER,
+                List.of("ALERT_READER"),
+                Instant.now().minusSeconds(3600)
+        );
 
-        mockMvc.perform(get("/api/alerts").header("Authorization", bearer(token)))
+        mockMvc.perform(get("/api/alerts")
+                        .header("Authorization", "Bearer " + expiredToken))
                 .andExpect(status().isUnauthorized())
                 .andExpect(header().exists("X-Correlation-Id"))
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
@@ -63,27 +74,39 @@ class AlertJwtWebTest {
 
     @Test
     void tokenSignedWithAnotherKeyGets401() throws Exception {
-        String token = token(OTHER_KEY, ISSUER, List.of("ALERT_READER"),
-                Instant.now().plusSeconds(3600));
+        String invalidSignatureToken = token(
+                OTHER_KEY,
+                ISSUER,
+                List.of("ALERT_READER"),
+                Instant.now().plusSeconds(3600)
+        );
 
-        mockMvc.perform(get("/api/alerts").header("Authorization", bearer(token)))
+        mockMvc.perform(get("/api/alerts")
+                        .header("Authorization", "Bearer " + invalidSignatureToken))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }
 
     @Test
     void tokenFromAnotherIssuerGets401() throws Exception {
-        String token = token(SIGNING_KEY, "someone-else", List.of("ALERT_READER"),
-                Instant.now().plusSeconds(3600));
+        String invalidIssuerToken = token(
+                SIGNING_KEY,
+                "someone-else",
+                List.of("ALERT_READER"),
+                Instant.now().plusSeconds(3600)
+        );
 
-        mockMvc.perform(get("/api/alerts").header("Authorization", bearer(token)))
+        mockMvc.perform(get("/api/alerts")
+                        .header("Authorization", "Bearer " + invalidIssuerToken))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
     void validTokenWithoutReaderRoleGets403() throws Exception {
+        String guestToken = validToken(List.of("GUEST"));
+
         mockMvc.perform(get("/api/alerts")
-                        .header("Authorization", bearer(validToken(List.of("GUEST")))))
+                        .header("Authorization", "Bearer " + guestToken))
                 .andExpect(status().isForbidden())
                 .andExpect(header().exists("X-Correlation-Id"))
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
@@ -91,7 +114,8 @@ class AlertJwtWebTest {
 
     @Test
     void garbageTokenGets401() throws Exception {
-        mockMvc.perform(get("/api/alerts").header("Authorization", "Bearer not-a-jwt"))
+        mockMvc.perform(get("/api/alerts")
+                        .header("Authorization", "Bearer not-a-jwt"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }

@@ -2,13 +2,16 @@ package com.telemetry.platform.api.security;
 
 import com.telemetry.platform.api.alert.AlertService;
 import com.telemetry.platform.api.alert.AnomalyAlertController;
-// IntelliJ: add the imports for @WebMvcTest and @MockitoBean here
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
+
+import static com.telemetry.platform.api.security.TestJwtSupport.validToken;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
@@ -17,15 +20,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @WebMvcTest(AnomalyAlertController.class)
-@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class,TestJwtSupport.Config.class })
-@TestPropertySource(properties = {
-        "app.security.reader-password=test-reader-pass",
-        "app.security.guest-password=test-guest-pass"
-})
+@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class,
+        ProblemAccessDeniedHandler.class, TestJwtSupport.Config.class})
 class AlertSecurityWebTest {
 
     @Autowired
@@ -34,34 +32,39 @@ class AlertSecurityWebTest {
     @MockitoBean
     private AlertService alertService;
 
+    private static String bearer(String role) {
+        return "Bearer " + validToken(List.of(role));
+    }
+
     @Test
     void anonymousRequestGets401WithProblemBodyAndCorrelationId() throws Exception {
         mockMvc.perform(get("/api/alerts"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(header().string("WWW-Authenticate", startsWith("Basic")))
+                .andExpect(header().string("WWW-Authenticate", startsWith("Bearer")))
                 .andExpect(header().exists("X-Correlation-Id"))
                 .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }
 
     @Test
-    void wrongPasswordGets401() throws Exception {
-        mockMvc.perform(get("/api/alerts").with(httpBasic("reader", "wrong")))
+    void basicCredentialsAreNoLongerAccepted() throws Exception {
+        mockMvc.perform(get("/api/alerts").with(httpBasic("reader", "anything")))
                 .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", startsWith("Bearer")))
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }
 
     @Test
-    void guestIsAuthenticatedButForbidden() throws Exception {
-        mockMvc.perform(get("/api/alerts").with(httpBasic("guest", "test-guest-pass")))
+    void guestTokenIsAuthenticatedButForbidden() throws Exception {
+        mockMvc.perform(get("/api/alerts").header("Authorization", bearer("GUEST")))
                 .andExpect(status().isForbidden())
                 .andExpect(header().exists("X-Correlation-Id"))
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
     @Test
-    void readerGets200() throws Exception {
-        mockMvc.perform(get("/api/alerts").with(httpBasic("reader", "test-reader-pass")))
+    void readerTokenGets200() throws Exception {
+        mockMvc.perform(get("/api/alerts").header("Authorization", bearer("ALERT_READER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray());
     }
@@ -76,7 +79,7 @@ class AlertSecurityWebTest {
     void validInboundCorrelationIdIsEchoed() throws Exception {
         mockMvc.perform(get("/api/alerts")
                         .header("X-Correlation-Id", "demo-123")
-                        .with(httpBasic("reader", "test-reader-pass")))
+                        .header("Authorization", bearer("ALERT_READER")))
                 .andExpect(header().string("X-Correlation-Id", "demo-123"));
     }
 
@@ -84,7 +87,7 @@ class AlertSecurityWebTest {
     void hostileInboundCorrelationIdIsReplaced() throws Exception {
         mockMvc.perform(get("/api/alerts")
                         .header("X-Correlation-Id", "bad value with spaces")
-                        .with(httpBasic("reader", "test-reader-pass")))
+                        .header("Authorization", bearer("ALERT_READER")))
                 .andExpect(header().string("X-Correlation-Id", not("bad value with spaces")));
     }
 }

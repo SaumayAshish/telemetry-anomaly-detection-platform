@@ -3,34 +3,32 @@ package com.telemetry.platform.api.alert;
 import com.telemetry.platform.api.security.ProblemAccessDeniedHandler;
 import com.telemetry.platform.api.security.ProblemAuthenticationEntryPoint;
 import com.telemetry.platform.api.security.SecurityConfig;
+import com.telemetry.platform.api.security.TestJwtSupport;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.util.List;
+
+import static com.telemetry.platform.api.security.TestJwtSupport.validToken;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import com.telemetry.platform.api.security.TestJwtSupport;
 
 @WebMvcTest(AnomalyAlertController.class)
-@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class, ProblemAccessDeniedHandler.class,TestJwtSupport.Config.class })
-@TestPropertySource(properties = {
-        "app.security.reader-password=test-reader-pass",
-        "app.security.guest-password=test-guest-pass"
-})
+@Import({SecurityConfig.class, ProblemAuthenticationEntryPoint.class,
+        ProblemAccessDeniedHandler.class, TestJwtSupport.Config.class})
 class AlertQueryWebTest {
 
     @Autowired
@@ -40,7 +38,10 @@ class AlertQueryWebTest {
     private AlertService alertService;
 
     private static RequestPostProcessor reader() {
-        return httpBasic("reader", "test-reader-pass");
+        return request -> {
+            request.addHeader("Authorization", "Bearer " + validToken(List.of("ALERT_READER")));
+            return request;
+        };
     }
 
     @Test

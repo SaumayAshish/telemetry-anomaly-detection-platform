@@ -15,7 +15,7 @@ public class ProblemAuthenticationEntryPoint implements AuthenticationEntryPoint
     public void commence(HttpServletRequest request, HttpServletResponse response,
                          AuthenticationException authException) throws IOException {
 
-        response.setHeader("WWW-Authenticate", "Basic realm=\"telemetry\"");
+        response.setHeader("WWW-Authenticate", "Bearer realm=\"telemetry\"");
         ProblemJson.write(response, 401, "Unauthorized",
                 "Authentication is required to access this resource.", "UNAUTHENTICATED");
     }
