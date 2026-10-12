@@ -817,13 +817,7 @@ public class AlertConsumer {
 
     private static boolean isRetryable(SQLException e) {
 
-        String sqlState = e.getSQLState();
-
-        if (sqlState == null || sqlState.length() < 2) {
-            return false;
-        }
-
-        return RETRYABLE_SQLSTATE_CLASSES.contains(sqlState.substring(0, 2));
+        return SqlFailureClassifier.isRetryable(e);
     }
 
     private static void closeQuietly(AutoCloseable resource) {
@@ -862,7 +856,7 @@ public class AlertConsumer {
             } catch (SQLException e) {
                 String sqlState = e.getSQLState();
 
-                if (sqlState != null && sqlState.startsWith("28")) {
+                if (SqlFailureClassifier.isCredentialRejection(sqlState)) {
                     log.error("Database rejected the configured credentials sqlState={}, not retrying", sqlState);
                     throw new IllegalStateException(
                             "Database rejected the configured credentials (SQLState=" + sqlState
@@ -939,11 +933,7 @@ public class AlertConsumer {
     // Values from Kafka messages are untrusted: strip control characters (a newline
     // could forge a fake log line) and cap the length.
     private static String safe(String value) {
-        if (value == null) {
-            return "null";
-        }
-        String cleaned = value.replaceAll("\\p{Cntrl}", "_");
-        return cleaned.length() > 64 ? cleaned.substring(0, 64) + "..." : cleaned;
+        return LogSanitizer.safe(value);
     }
 
 }
