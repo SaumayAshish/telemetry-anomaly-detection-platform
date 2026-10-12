@@ -21,6 +21,7 @@
 
     <modules>
         <module>common-models</module>
+        <module>db-migrations</module>
         <module>ingestion-service</module>
         <module>stream-processing-service</module>
         <module>alerting-service</module>
