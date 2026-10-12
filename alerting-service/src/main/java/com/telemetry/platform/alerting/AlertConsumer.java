@@ -856,11 +856,11 @@ public class AlertConsumer {
             } catch (SQLException e) {
                 String sqlState = e.getSQLState();
 
-                if (SqlFailureClassifier.isCredentialRejection(sqlState)) {
-                    log.error("Database rejected the configured credentials sqlState={}, not retrying", sqlState);
+                if (SqlFailureClassifier.isFatalConnectFailure(sqlState)) {
+                    log.error("Database rejected the connection sqlState={}, not retrying", sqlState);
                     throw new IllegalStateException(
-                            "Database rejected the configured credentials (SQLState=" + sqlState
-                                    + "). Not retrying: " + e.getMessage(), e);
+                            "Database rejected the connection (SQLState=" + sqlState
+                                    + "). Check DB_USER and DB_PASSWORD. Not retrying: " + e.getMessage(), e);
                 }
 
                 log.warn("Database connection failed, retrying in {} ms sqlState={}: {}",

@@ -44,4 +44,20 @@ class SqlFailureClassifierTest {
         assertThat(SqlFailureClassifier.isCredentialRejection("23514")).isFalse();
         assertThat(SqlFailureClassifier.isCredentialRejection(null)).isFalse();
     }
+    @Test
+    void aRejectedConnectionIsNotRetryableButOtherConnectionFailuresStillAre() {
+        assertThat(SqlFailureClassifier.isRetryable(withState("08004"))).isFalse();
+
+        assertThat(SqlFailureClassifier.isRetryable(withState("08001"))).isTrue();
+        assertThat(SqlFailureClassifier.isRetryable(withState("08006"))).isTrue();
+    }
+    @Test
+    void fatalConnectFailuresAreBadCredentialsAndRejectedConnections() {
+        assertThat(SqlFailureClassifier.isFatalConnectFailure("28P01")).isTrue();
+        assertThat(SqlFailureClassifier.isFatalConnectFailure("08004")).isTrue();
+
+        assertThat(SqlFailureClassifier.isFatalConnectFailure("08001")).isFalse();
+        assertThat(SqlFailureClassifier.isFatalConnectFailure("08006")).isFalse();
+        assertThat(SqlFailureClassifier.isFatalConnectFailure(null)).isFalse();
+    }
 }
