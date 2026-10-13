@@ -42,68 +42,52 @@ import java.util.stream.Collectors;
 
 public class AlertConsumer {
 
-    private static final String ANOMALY_TOPIC =
-            "telemetry.sensor.anomalies.v1";
-
-    private static final String GROUP_ID =
-            "alerting-service-group";
-
-    private static final Logger log =
-            LoggerFactory.getLogger(AlertConsumer.class);
+    private static final String ANOMALY_TOPIC = "telemetry.sensor.anomalies.v1";
+    private static final String GROUP_ID = "alerting-service-group";
+    private static final Logger log = LoggerFactory.getLogger(AlertConsumer.class);
 
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final int BACKOFF_MULTIPLIER = 2;
     private static final long MAX_BACKOFF_MS = 30_000;
-
     private static AlertConsumerConfig config;
 
-    // How often connectWithRetry() checks for a shutdown signal.
     private static final long SHUTDOWN_CHECK_INTERVAL_MS = 200;
-
     private static volatile boolean shuttingDown = false;
 
     private static final ValidatorFactory VALIDATOR_FACTORY =
             Validation.buildDefaultValidatorFactory();
-
     private static final Validator VALIDATOR =
             VALIDATOR_FACTORY.getValidator();
 
     private static final Duration POLL_TIMEOUT =
             Duration.ofSeconds(1);
 
-    /*
-     * SQLState classes considered retryable:
-     *
-     * 08 - Connection Exception
-     * 53 - Insufficient Resources
-     * 57 - Operator Intervention
-     */
     private static final Set<String> RETRYABLE_SQLSTATE_CLASSES =
             Set.of("08", "53", "57");
 
-    /*
-     * Last-resort sink when a non-retryable DLQ-table write fails.
-     */
     private static final Path DLQ_FALLBACK_FILE =
             Paths.get("dlq-fallback.jsonl");
 
-    // SQL statements are maintained by AlertStore.
-    private static final String INSERT_ALERT_SQL =
-            AlertStore.INSERT_ALERT_SQL;
+    private static final String INSERT_ALERT_SQL = AlertStore.INSERT_ALERT_SQL;
+    private static final String INSERT_ALERT_DLQ_SQL = AlertStore.INSERT_ALERT_DLQ_SQL;
 
-    private static final String INSERT_ALERT_DLQ_SQL =
-            AlertStore.INSERT_ALERT_DLQ_SQL;
+    private static final DatabaseConnector CONNECTOR = new DatabaseConnector(
+            () -> DriverManager.getConnection(
+                    AlertConsumer.config.dbUrl(),
+                    AlertConsumer.config.dbUser(),
+                    AlertConsumer.config.dbPassword()),
+            AlertConsumer::sleepUnlessShuttingDown,
+            INITIAL_BACKOFF_MS,
+            MAX_BACKOFF_MS,
+            BACKOFF_MULTIPLIER);
 
-    private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     static {
         OBJECT_MAPPER.registerModule(new JavaTimeModule());
-
         OBJECT_MAPPER.disable(
                 SerializationFeature.WRITE_DATES_AS_TIMESTAMPS
         );
-
         OBJECT_MAPPER.configure(
                 DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
                 false
@@ -113,7 +97,6 @@ public class AlertConsumer {
     public static void main(String[] args) {
 
         config = AlertConsumerConfig.fromEnvironment();
-
         log.info("Configuration loaded: {}", config);
 
         Properties props = new Properties();
@@ -122,17 +105,14 @@ public class AlertConsumer {
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
                 config.kafkaBootstrapServers()
         );
-
         props.put(
                 ConsumerConfig.GROUP_ID_CONFIG,
                 GROUP_ID
         );
-
         props.put(
                 ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                 "earliest"
         );
-
         props.put(
                 ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,
                 false
@@ -140,8 +120,8 @@ public class AlertConsumer {
 
         /*
          * Consume both key and value as plain Strings.
-         * JSON deserialization is performed explicitly inside
-         * the processing loop so failures can be dead-lettered.
+         * Parse the event explicitly inside the processing loop so
+         * malformed messages can be routed to the dead-letter path.
          */
         KafkaConsumer<String, String> consumer =
                 new KafkaConsumer<>(
@@ -156,13 +136,9 @@ public class AlertConsumer {
 
         Runtime.getRuntime().addShutdownHook(
                 new Thread(() -> {
-
-                    log.info(
-                            "Shutdown signal received, waking up consumer"
-                    );
+                    log.info("Shutdown signal received, waking up consumer");
 
                     shuttingDown = true;
-
                     consumer.wakeup();
 
                     try {
@@ -174,15 +150,10 @@ public class AlertConsumer {
         );
 
         Connection dbConnection = null;
-
         PreparedStatement insertAlertStatement = null;
         PreparedStatement alertDlqStatement = null;
 
         try {
-
-            /*
-             * Establish the initial database connection.
-             */
             dbConnection = connectWithRetry();
 
             insertAlertStatement =
@@ -199,17 +170,12 @@ public class AlertConsumer {
                 for (ConsumerRecord<String, String> record : records) {
 
                     String rawPayload = record.value();
-
                     AnomalyEvent event;
-
                     boolean persisted = false;
                     boolean wasNewInsert = false;
 
-                    /*
-                     * JSON deserialization boundary.
-                     */
+                    // JSON deserialization boundary.
                     try {
-
                         event = OBJECT_MAPPER.readValue(
                                 rawPayload,
                                 AnomalyEvent.class
@@ -217,8 +183,7 @@ public class AlertConsumer {
 
                         if (event == null) {
                             throw new IllegalArgumentException(
-                                    "Payload deserialized to null "
-                                            + "(JSON null literal)"
+                                    "Payload deserialized to null (JSON null literal)"
                             );
                         }
 
@@ -228,28 +193,20 @@ public class AlertConsumer {
                     ) {
 
                         log.warn(
-                                "Deserialization failed topic={} partition={} "
-                                        + "offset={} exception={}",
+                                "Deserialization failed topic={} partition={} offset={} exception={}",
                                 record.topic(),
                                 record.partition(),
                                 record.offset(),
-                                deserializationFailure
-                                        .getClass()
-                                        .getSimpleName()
+                                deserializationFailure.getClass().getSimpleName()
                         );
 
                         boolean deadLettered = false;
 
                         while (!deadLettered) {
-
                             try {
-
                                 if (!dbConnection.isValid(2)) {
-
                                     log.warn(
-                                            "Database connection no longer valid, "
-                                                    + "reconnecting topic={} "
-                                                    + "partition={} offset={}",
+                                            "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
                                             record.topic(),
                                             record.partition(),
                                             record.offset()
@@ -262,14 +219,10 @@ public class AlertConsumer {
                                     dbConnection = connectWithRetry();
 
                                     insertAlertStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                     alertDlqStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_DLQ_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                 }
 
                                 boolean wasNewDeadLetter = deadLetter(
@@ -295,7 +248,6 @@ public class AlertConsumer {
                             } catch (SQLException dlqEx) {
 
                                 if (!isRetryable(dlqEx)) {
-
                                     writeFallbackRecord(
                                             "UNKNOWN",
                                             rawPayload,
@@ -310,12 +262,8 @@ public class AlertConsumer {
                                     deadLettered = true;
 
                                 } else {
-
                                     log.warn(
-                                            "Transient database error writing "
-                                                    + "dead letter, reconnecting "
-                                                    + "topic={} partition={} "
-                                                    + "offset={} sqlState={}",
+                                            "Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
                                             record.topic(),
                                             record.partition(),
                                             record.offset(),
@@ -329,45 +277,31 @@ public class AlertConsumer {
                                     dbConnection = connectWithRetry();
 
                                     insertAlertStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                     alertDlqStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_DLQ_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                 }
                             }
                         }
 
-                        /*
-                         * Never send a malformed message to validation
-                         * or alert persistence.
-                         */
+                        // Malformed messages never reach validation or persistence.
                         continue;
                     }
 
-                    /*
-                     * Bean Validation boundary.
-                     */
+                    // Bean Validation boundary.
                     Set<ConstraintViolation<AnomalyEvent>> violations =
                             VALIDATOR.validate(event);
 
                     if (!violations.isEmpty()) {
 
                         String violationSummary = violations.stream()
-                                .map(v ->
-                                        v.getPropertyPath()
-                                                + ": "
-                                                + v.getMessage()
-                                )
+                                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                                 .sorted()
                                 .collect(Collectors.joining("; "));
 
                         log.warn(
-                                "Validation failed topic={} partition={} "
-                                        + "offset={} sensorId={} violations=[{}]",
+                                "Validation failed topic={} partition={} offset={} sensorId={} violations=[{}]",
                                 record.topic(),
                                 record.partition(),
                                 record.offset(),
@@ -376,19 +310,13 @@ public class AlertConsumer {
                         );
 
                         String payload = rawPayload;
-
                         boolean deadLettered = false;
 
                         while (!deadLettered) {
-
                             try {
-
                                 if (!dbConnection.isValid(2)) {
-
                                     log.warn(
-                                            "Database connection no longer valid, "
-                                                    + "reconnecting topic={} "
-                                                    + "partition={} offset={}",
+                                            "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
                                             record.topic(),
                                             record.partition(),
                                             record.offset()
@@ -401,14 +329,10 @@ public class AlertConsumer {
                                     dbConnection = connectWithRetry();
 
                                     insertAlertStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                     alertDlqStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_DLQ_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                 }
 
                                 boolean wasNewDeadLetter = deadLetter(
@@ -434,7 +358,6 @@ public class AlertConsumer {
                             } catch (SQLException dlqEx) {
 
                                 if (!isRetryable(dlqEx)) {
-
                                     writeFallbackRecord(
                                             event.sensorId(),
                                             payload,
@@ -449,12 +372,8 @@ public class AlertConsumer {
                                     deadLettered = true;
 
                                 } else {
-
                                     log.warn(
-                                            "Transient database error writing "
-                                                    + "dead letter, reconnecting "
-                                                    + "topic={} partition={} "
-                                                    + "offset={} sqlState={}",
+                                            "Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
                                             record.topic(),
                                             record.partition(),
                                             record.offset(),
@@ -468,38 +387,24 @@ public class AlertConsumer {
                                     dbConnection = connectWithRetry();
 
                                     insertAlertStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                     alertDlqStatement =
-                                            dbConnection.prepareStatement(
-                                                    INSERT_ALERT_DLQ_SQL
-                                            );
+                                            dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                 }
                             }
                         }
 
-                        /*
-                         * Invalid events must not reach persistAlert().
-                         */
+                        // Invalid events never reach persistAlert().
                         continue;
                     }
 
-                    /*
-                     * Retry until the alert is persisted or the failure
-                     * is determined to be permanent.
-                     */
+                    // Retry until the alert is persisted or the failure is permanent.
                     while (!persisted) {
-
                         try {
-
                             if (!dbConnection.isValid(2)) {
-
                                 log.warn(
-                                        "Database connection no longer valid, "
-                                                + "reconnecting topic={} "
-                                                + "partition={} offset={}",
+                                        "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
                                         record.topic(),
                                         record.partition(),
                                         record.offset()
@@ -512,14 +417,10 @@ public class AlertConsumer {
                                 dbConnection = connectWithRetry();
 
                                 insertAlertStatement =
-                                        dbConnection.prepareStatement(
-                                                INSERT_ALERT_SQL
-                                        );
+                                        dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                 alertDlqStatement =
-                                        dbConnection.prepareStatement(
-                                                INSERT_ALERT_DLQ_SQL
-                                        );
+                                        dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                             }
 
                             wasNewInsert = persistAlert(
@@ -534,11 +435,8 @@ public class AlertConsumer {
                         } catch (SQLException e) {
 
                             if (!isRetryable(e)) {
-
                                 log.warn(
-                                        "Insert rejected permanently topic={} "
-                                                + "partition={} offset={} "
-                                                + "sensorId={} sqlState={}",
+                                        "Insert rejected permanently topic={} partition={} offset={} sensorId={} sqlState={}",
                                         record.topic(),
                                         record.partition(),
                                         record.offset(),
@@ -551,21 +449,12 @@ public class AlertConsumer {
                                 String failurePayload;
 
                                 try {
-
                                     failurePayload =
-                                            OBJECT_MAPPER.writeValueAsString(
-                                                    event
-                                            );
+                                            OBJECT_MAPPER.writeValueAsString(event);
 
                                 } catch (JsonProcessingException je) {
-
                                     log.error(
-                                            "Could not serialize event for "
-                                                    + "dead-letter capture, "
-                                                    + "alert permanently lost "
-                                                    + "topic={} partition={} "
-                                                    + "offset={} sensorId={} "
-                                                    + "exception={}",
+                                            "Could not serialize event for dead-letter capture, alert permanently lost topic={} partition={} offset={} sensorId={} exception={}",
                                             record.topic(),
                                             record.partition(),
                                             record.offset(),
@@ -578,23 +467,12 @@ public class AlertConsumer {
 
                                 boolean deadLettered = false;
 
-                                /*
-                                 * Retry the DLQ write when the failure
-                                 * is transient.
-                                 */
+                                // Retry the DLQ write when the failure is transient.
                                 while (!deadLettered) {
-
                                     try {
-
                                         if (!dbConnection.isValid(2)) {
-
                                             log.warn(
-                                                    "Database connection no "
-                                                            + "longer valid, "
-                                                            + "reconnecting "
-                                                            + "topic={} "
-                                                            + "partition={} "
-                                                            + "offset={}",
+                                                    "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
                                                     record.topic(),
                                                     record.partition(),
                                                     record.offset()
@@ -607,14 +485,10 @@ public class AlertConsumer {
                                             dbConnection = connectWithRetry();
 
                                             insertAlertStatement =
-                                                    dbConnection.prepareStatement(
-                                                            INSERT_ALERT_SQL
-                                                    );
+                                                    dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                             alertDlqStatement =
-                                                    dbConnection.prepareStatement(
-                                                            INSERT_ALERT_DLQ_SQL
-                                                    );
+                                                    dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                         }
 
                                         boolean wasNewDeadLetter = deadLetter(
@@ -640,7 +514,6 @@ public class AlertConsumer {
                                     } catch (SQLException dlqEx) {
 
                                         if (!isRetryable(dlqEx)) {
-
                                             writeFallbackRecord(
                                                     event.sensorId(),
                                                     failurePayload,
@@ -655,13 +528,8 @@ public class AlertConsumer {
                                             deadLettered = true;
 
                                         } else {
-
                                             log.warn(
-                                                    "Transient database error "
-                                                            + "writing dead letter, "
-                                                            + "reconnecting "
-                                                            + "topic={} partition={} "
-                                                            + "offset={} sqlState={}",
+                                                    "Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
                                                     record.topic(),
                                                     record.partition(),
                                                     record.offset(),
@@ -675,29 +543,20 @@ public class AlertConsumer {
                                             dbConnection = connectWithRetry();
 
                                             insertAlertStatement =
-                                                    dbConnection.prepareStatement(
-                                                            INSERT_ALERT_SQL
-                                                    );
+                                                    dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                                             alertDlqStatement =
-                                                    dbConnection.prepareStatement(
-                                                            INSERT_ALERT_DLQ_SQL
-                                                    );
+                                                    dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                                         }
                                     }
                                 }
 
-                                /*
-                                 * The record was dead-lettered or captured
-                                 * by the local fallback.
-                                 */
+                                // The record was dead-lettered or captured by fallback.
                                 break;
                             }
 
                             log.warn(
-                                    "Transient database error persisting alert, "
-                                            + "reconnecting topic={} partition={} "
-                                            + "offset={} sqlState={}",
+                                    "Transient database error persisting alert, reconnecting topic={} partition={} offset={} sqlState={}",
                                     record.topic(),
                                     record.partition(),
                                     record.offset(),
@@ -711,22 +570,16 @@ public class AlertConsumer {
                             dbConnection = connectWithRetry();
 
                             insertAlertStatement =
-                                    dbConnection.prepareStatement(
-                                            INSERT_ALERT_SQL
-                                    );
+                                    dbConnection.prepareStatement(INSERT_ALERT_SQL);
 
                             alertDlqStatement =
-                                    dbConnection.prepareStatement(
-                                            INSERT_ALERT_DLQ_SQL
-                                    );
+                                    dbConnection.prepareStatement(INSERT_ALERT_DLQ_SQL);
                         }
                     }
 
                     if (persisted && wasNewInsert) {
-
                         log.info(
-                                "ALERT_PERSISTED topic={} partition={} "
-                                        + "offset={} sensorId={} severity={}",
+                                "ALERT_PERSISTED topic={} partition={} offset={} sensorId={} severity={}",
                                 record.topic(),
                                 record.partition(),
                                 record.offset(),
@@ -735,10 +588,8 @@ public class AlertConsumer {
                         );
 
                     } else if (persisted) {
-
                         log.info(
-                                "ALERT_DUPLICATE topic={} partition={} "
-                                        + "offset={} sensorId={}",
+                                "ALERT_DUPLICATE topic={} partition={} offset={} sensorId={}",
                                 record.topic(),
                                 record.partition(),
                                 record.offset(),
@@ -747,10 +598,7 @@ public class AlertConsumer {
                     }
                 }
 
-                /*
-                 * Commit only after the entire polled batch has been
-                 * processed successfully or routed to the DLQ.
-                 */
+                // Commit only after the polled batch has been processed.
                 if (!records.isEmpty()) {
                     consumer.commitSync();
                 }
@@ -758,15 +606,12 @@ public class AlertConsumer {
 
         } catch (WakeupException e) {
 
-            log.info(
-                    "Consumer loop interrupted for shutdown, as expected"
-            );
+            log.info("Consumer loop interrupted for shutdown, as expected");
 
         } catch (InterruptedException e) {
 
             log.info(
-                    "Consumer interrupted during reconnect backoff "
-                            + "for shutdown, as expected"
+                    "Consumer interrupted during reconnect backoff for shutdown, as expected"
             );
 
         } catch (SQLException e) {
@@ -788,9 +633,6 @@ public class AlertConsumer {
         }
     }
 
-    /*
-     * Delegate alert persistence to AlertStore.
-     */
     private static boolean persistAlert(
             PreparedStatement insertAlertStatement,
             AnomalyEvent event,
@@ -806,9 +648,6 @@ public class AlertConsumer {
         );
     }
 
-    /*
-     * Delegate dead-letter persistence to AlertStore.
-     */
     private static boolean deadLetter(
             PreparedStatement alertDlqStatement,
             String sensorId,
@@ -835,9 +674,6 @@ public class AlertConsumer {
     /**
      * Last-resort persistence when the dead-letter table write fails
      * for a non-retryable reason.
-     *
-     * Appends the failed record to a local JSON-Lines file.
-     * If this file write also fails, the consumer crashes loudly.
      */
     private static void writeFallbackRecord(
             String sensorId,
@@ -849,11 +685,8 @@ public class AlertConsumer {
             String errorMessage,
             SQLException dlqWriteFailure
     ) {
-
         try {
-
             Map<String, Object> fallbackRecord = new LinkedHashMap<>();
-
             fallbackRecord.put("kafkaTopic", kafkaTopic);
             fallbackRecord.put("kafkaPartition", kafkaPartition);
             fallbackRecord.put("kafkaOffset", kafkaOffset);
@@ -861,17 +694,14 @@ public class AlertConsumer {
             fallbackRecord.put("payload", payload);
             fallbackRecord.put("sqlState", sqlState);
             fallbackRecord.put("errorMessage", errorMessage);
-
             fallbackRecord.put(
                     "dlqWriteFailureSqlState",
                     dlqWriteFailure.getSQLState()
             );
-
             fallbackRecord.put(
                     "dlqWriteFailureReason",
                     dlqWriteFailure.getMessage()
             );
-
             fallbackRecord.put("failedAt", Instant.now().toString());
 
             String line =
@@ -884,20 +714,14 @@ public class AlertConsumer {
                     StandardOpenOption.APPEND,
                     StandardOpenOption.WRITE
             )) {
-
                 channel.write(
-                        ByteBuffer.wrap(
-                                line.getBytes(StandardCharsets.UTF_8)
-                        )
+                        ByteBuffer.wrap(line.getBytes(StandardCharsets.UTF_8))
                 );
-
                 channel.force(true);
             }
 
             log.error(
-                    "DLQ_TABLE_WRITE_FAILED, fell back to local file "
-                            + "topic={} partition={} offset={} "
-                            + "sensorId={} sqlState={} file={}",
+                    "DLQ_TABLE_WRITE_FAILED, fell back to local file topic={} partition={} offset={} sensorId={} sqlState={} file={}",
                     kafkaTopic,
                     kafkaPartition,
                     kafkaOffset,
@@ -909,10 +733,7 @@ public class AlertConsumer {
         } catch (IOException | RuntimeException fallbackFailure) {
 
             log.error(
-                    "DLQ table write AND local file fallback both failed, "
-                            + "record permanently lost topic={} partition={} "
-                            + "offset={} sensorId={} dlqSqlState={} "
-                            + "fallbackException={}",
+                    "DLQ table write AND local file fallback both failed, record permanently lost topic={} partition={} offset={} sensorId={} dlqSqlState={} fallbackException={}",
                     kafkaTopic,
                     kafkaPartition,
                     kafkaOffset,
@@ -922,8 +743,7 @@ public class AlertConsumer {
             );
 
             throw new UncheckedIOException(
-                    "Unable to persist failed message anywhere - "
-                            + "DB and local fallback both failed",
+                    "Unable to persist failed message anywhere - DB and local fallback both failed",
                     fallbackFailure instanceof IOException ioFailure
                             ? ioFailure
                             : new IOException(fallbackFailure)
@@ -936,17 +756,13 @@ public class AlertConsumer {
     }
 
     private static void closeQuietly(AutoCloseable resource) {
-
         if (resource == null) {
             return;
         }
 
         try {
-
             resource.close();
-
         } catch (Exception e) {
-
             log.warn(
                     "Error closing resource exception={}",
                     e.getClass().getSimpleName()
@@ -954,73 +770,14 @@ public class AlertConsumer {
         }
     }
 
-    private static Connection connectWithRetry()
-            throws InterruptedException {
-
-        long backoffMs = INITIAL_BACKOFF_MS;
-
-        while (true) {
-
-            try {
-
-                Connection connection =
-                        DriverManager.getConnection(
-                                config.dbUrl(),
-                                config.dbUser(),
-                                config.dbPassword()
-                        );
-
-                log.info("Connected to database");
-
-                return connection;
-
-            } catch (SQLException e) {
-
-                String sqlState = e.getSQLState();
-
-                if (SqlFailureClassifier.isFatalConnectFailure(sqlState)) {
-
-                    log.error(
-                            "Database rejected the connection "
-                                    + "sqlState={}, not retrying",
-                            sqlState
-                    );
-
-                    throw new IllegalStateException(
-                            "Database rejected the connection (SQLState="
-                                    + sqlState
-                                    + "). Check DB_USER and DB_PASSWORD. "
-                                    + "Not retrying: "
-                                    + e.getMessage(),
-                            e
-                    );
-                }
-
-                log.warn(
-                        "Database connection failed, retrying in {} ms "
-                                + "sqlState={}: {}",
-                        backoffMs,
-                        e.getSQLState(),
-                        e.getMessage()
-                );
-
-                sleepUnlessShuttingDown(backoffMs);
-
-                /*
-                 * Exponential backoff:
-                 * 1s -> 2s -> 4s -> 8s -> 16s -> 30s -> 30s...
-                 */
-                backoffMs = Math.min(
-                        backoffMs * BACKOFF_MULTIPLIER,
-                        MAX_BACKOFF_MS
-                );
-            }
-        }
+    private static Connection connectWithRetry() throws InterruptedException {
+        return CONNECTOR.connectWithRetry();
     }
 
     /**
-     * Sleeps for up to durationMs, checking the shutdown flag
-     * every SHUTDOWN_CHECK_INTERVAL_MS.
+     * Sleeps for up to durationMs, checking the shutdown flag every
+     * SHUTDOWN_CHECK_INTERVAL_MS and returning early by throwing
+     * InterruptedException if a shutdown signal arrives during backoff.
      */
     private static void sleepUnlessShuttingDown(long durationMs)
             throws InterruptedException {
@@ -1028,17 +785,14 @@ public class AlertConsumer {
         long remainingMs = durationMs;
 
         while (remainingMs > 0) {
-
             if (shuttingDown) {
                 throw new InterruptedException(
                         "Shutdown requested during reconnect backoff"
                 );
             }
 
-            long thisSleepMs = Math.min(
-                    remainingMs,
-                    SHUTDOWN_CHECK_INTERVAL_MS
-            );
+            long thisSleepMs =
+                    Math.min(remainingMs, SHUTDOWN_CHECK_INTERVAL_MS);
 
             Thread.sleep(thisSleepMs);
 
@@ -1052,24 +806,18 @@ public class AlertConsumer {
             String sensorId,
             String reason
     ) {
-
         if (isNew) {
-
             log.warn(
-                    "DEAD_LETTERED topic={} partition={} offset={} "
-                            + "sensorId={} reason={}",
+                    "DEAD_LETTERED topic={} partition={} offset={} sensorId={} reason={}",
                     record.topic(),
                     record.partition(),
                     record.offset(),
                     safe(sensorId),
                     reason
             );
-
         } else {
-
             log.info(
-                    "DEAD_LETTER_DUPLICATE topic={} partition={} offset={} "
-                            + "sensorId={} reason={}",
+                    "DEAD_LETTER_DUPLICATE topic={} partition={} offset={} sensorId={} reason={}",
                     record.topic(),
                     record.partition(),
                     record.offset(),
@@ -1079,10 +827,6 @@ public class AlertConsumer {
         }
     }
 
-    /*
-     * Values from Kafka messages are untrusted.
-     * Strip control characters and cap the length.
-     */
     private static String safe(String value) {
         return LogSanitizer.safe(value);
     }
