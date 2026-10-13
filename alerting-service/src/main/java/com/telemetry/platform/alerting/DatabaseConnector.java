@@ -12,6 +12,12 @@ import org.slf4j.LoggerFactory;
  * and without waiting.
  */
 final class DatabaseConnector {
+    /** Names the setting an operator should check, so the message does not send them to the wrong one. */
+    private static String fixHint(String sqlState) {
+        return SqlFailureClassifier.isUnknownDatabase(sqlState)
+                ? "Check the database name in DB_URL."
+                : "Check DB_USER and DB_PASSWORD.";
+    }
 
     private static final Logger log = LoggerFactory.getLogger(DatabaseConnector.class);
 
@@ -64,8 +70,8 @@ final class DatabaseConnector {
                 if (SqlFailureClassifier.isFatalConnectFailure(sqlState)) {
                     log.error("Database rejected the connection sqlState={}, not retrying", sqlState);
                     throw new IllegalStateException(
-                            "Database rejected the connection (SQLState=" + sqlState
-                                    + "). Check DB_USER and DB_PASSWORD. Not retrying: " + e.getMessage(), e);
+                            "Database rejected the connection (SQLState=" + sqlState + "). "
+                                    + fixHint(sqlState) + " Not retrying: " + e.getMessage(), e);
                 }
 
                 log.warn("Database connection failed, retrying in {} ms sqlState={}: {}",

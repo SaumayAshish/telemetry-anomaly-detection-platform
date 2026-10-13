@@ -57,16 +57,16 @@ class DriverSqlStateContractTest {
     }
 
     // Documents current behavior, not an endorsement: a wrong database name is a
-    // configuration error, yet the connector would retry it forever.
+    // A typo in DB_URL is a configuration error: waiting cannot create the database.
     @Test
-    void nonexistentDatabaseIs3D000AndIsCurrentlyRetried() {
+    void nonexistentDatabaseIs3D000AndIsFatal() {
         String url = POSTGRES.getJdbcUrl()
                 .replace("/" + POSTGRES.getDatabaseName() + "?", "/no_such_db?");
 
         SQLException failure = connectionFailure(url, POSTGRES.getUsername(), POSTGRES.getPassword());
 
         assertThat(failure.getSQLState()).isEqualTo("3D000");
-        assertThat(SqlFailureClassifier.isFatalConnectFailure(failure.getSQLState())).isFalse();
+        assertThat(SqlFailureClassifier.isFatalConnectFailure(failure.getSQLState())).isTrue();
     }
 
     @Test

@@ -72,6 +72,20 @@ class DatabaseConnectorTest {
         assertThat(attempts).hasValue(1);
         assertThat(sleeps).isEmpty();
     }
+    @Test
+    void unknownDatabaseFailsFastAndPointsAtDbUrl() {
+        SQLException missing = new SQLException("database \"no_such_db\" does not exist", "3D000");
+        DatabaseConnector connector = connectorThatYields(missing);
+
+        assertThatThrownBy(connector::connectWithRetry)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("3D000")
+                .hasMessageContaining("DB_URL")
+                .hasMessageNotContaining("DB_PASSWORD")
+                .hasCause(missing);
+        assertThat(attempts).hasValue(1);
+        assertThat(sleeps).isEmpty();
+    }
 
     @Test
     void wrongPasswordFailsFastWithoutRetrying() {
