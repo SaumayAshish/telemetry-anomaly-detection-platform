@@ -1,15 +1,8 @@
 package com.telemetry.platform.alerting;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.telemetry.platform.alerting.AlertWriter.DeadLetter;
-import com.telemetry.platform.alerting.AlertWriter.PersistResult;
 import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
-import com.telemetry.platform.events.AnomalyEvent;
-import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
@@ -39,8 +32,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 public class AlertConsumer {
 
@@ -77,18 +68,8 @@ public class AlertConsumer {
             MAX_BACKOFF_MS,
             BACKOFF_MULTIPLIER);
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-
-    static {
-        OBJECT_MAPPER.registerModule(new JavaTimeModule());
-        OBJECT_MAPPER.disable(
-                SerializationFeature.WRITE_DATES_AS_TIMESTAMPS
-        );
-        OBJECT_MAPPER.configure(
-                DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
-                false
-        );
-    }
+    private static final ObjectMapper OBJECT_MAPPER =
+            RecordProcessor.newObjectMapper();
 
     public static void main(String[] args) {
 
@@ -153,13 +134,22 @@ public class AlertConsumer {
                     AlertConsumer::writeFallback
             );
 
+            RecordProcessor processor =
+                    new RecordProcessor(writer, OBJECT_MAPPER, VALIDATOR);
+
             while (true) {
 
                 ConsumerRecords<String, String> records =
                         consumer.poll(POLL_TIMEOUT);
 
                 for (ConsumerRecord<String, String> record : records) {
-                    processRecord(writer, record);
+                    RecordPosition position = new RecordPosition(
+                            record.topic(),
+                            record.partition(),
+                            record.offset()
+                    );
+
+                    processor.process(position, record.value());
                 }
 
                 // Commit only after the polled batch has been processed.
@@ -195,166 +185,6 @@ public class AlertConsumer {
 
             log.info("Consumer closed cleanly");
         }
-    }
-
-    /**
-     * Routes one Kafka record: malformed JSON and invalid events are dead-lettered,
-     * valid events are persisted. The caller commits offsets after the whole batch.
-     */
-    private static void processRecord(
-            AlertWriter writer,
-            ConsumerRecord<String, String> record
-    ) throws SQLException, InterruptedException {
-
-        RecordPosition position = new RecordPosition(
-                record.topic(),
-                record.partition(),
-                record.offset()
-        );
-        String rawPayload = record.value();
-        AnomalyEvent event;
-
-        // JSON deserialization boundary.
-        try {
-            event = OBJECT_MAPPER.readValue(rawPayload, AnomalyEvent.class);
-
-            if (event == null) {
-                throw new IllegalArgumentException(
-                        "Payload deserialized to null (JSON null literal)"
-                );
-            }
-
-        } catch (
-                JsonProcessingException
-                | IllegalArgumentException deserializationFailure
-        ) {
-
-            log.warn(
-                    "Deserialization failed topic={} partition={} offset={} exception={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    deserializationFailure.getClass().getSimpleName()
-            );
-
-            writer.deadLetter(position, new DeadLetter(
-                    "UNKNOWN",
-                    rawPayload,
-                    "DESERIALIZATION",
-                    deserializationFailure.getMessage(),
-                    "DESERIALIZATION"
-            ));
-
-            // Malformed messages never reach validation or persistence.
-            return;
-        }
-
-        // Bean Validation boundary.
-        Set<ConstraintViolation<AnomalyEvent>> violations =
-                VALIDATOR.validate(event);
-
-        if (!violations.isEmpty()) {
-
-            String violationSummary = violations.stream()
-                    .map(v -> v.getPropertyPath() + ": " + v.getMessage())
-                    .sorted()
-                    .collect(Collectors.joining("; "));
-
-            log.warn(
-                    "Validation failed topic={} partition={} offset={} sensorId={} violations=[{}]",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    safe(event.sensorId()),
-                    violationSummary
-            );
-
-            writer.deadLetter(position, new DeadLetter(
-                    event.sensorId(),
-                    rawPayload,
-                    "VALIDATION",
-                    violationSummary,
-                    "VALIDATION"
-            ));
-
-            // Invalid events never reach persistence.
-            return;
-        }
-
-        PersistResult result = writer.persist(position, event);
-
-        switch (result.outcome()) {
-            case INSERTED -> log.info(
-                    "ALERT_PERSISTED topic={} partition={} offset={} sensorId={} severity={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    safe(event.sensorId()),
-                    event.severity()
-            );
-
-            case DUPLICATE -> log.info(
-                    "ALERT_DUPLICATE topic={} partition={} offset={} sensorId={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    safe(event.sensorId())
-            );
-
-            case REJECTED -> deadLetterRejectedInsert(
-                    writer,
-                    position,
-                    event,
-                    result.failure()
-            );
-        }
-    }
-
-    /**
-     * The database permanently refused this alert (for example a constraint violation).
-     * Capture the event in the dead-letter table with the real SQLState.
-     */
-    private static void deadLetterRejectedInsert(
-            AlertWriter writer,
-            RecordPosition position,
-            AnomalyEvent event,
-            SQLException failure
-    ) throws SQLException, InterruptedException {
-
-        log.warn(
-                "Insert rejected permanently topic={} partition={} offset={} sensorId={} sqlState={}",
-                position.topic(),
-                position.partition(),
-                position.offset(),
-                safe(event.sensorId()),
-                failure.getSQLState()
-        );
-
-        String failurePayload;
-
-        try {
-            failurePayload = OBJECT_MAPPER.writeValueAsString(event);
-
-        } catch (JsonProcessingException je) {
-            log.error(
-                    "Could not serialize event for dead-letter capture, alert permanently lost topic={} partition={} offset={} sensorId={} exception={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    safe(event.sensorId()),
-                    je.getClass().getSimpleName()
-            );
-
-            return;
-        }
-
-        writer.deadLetter(position, new DeadLetter(
-                event.sensorId(),
-                failurePayload,
-                failure.getSQLState(),
-                failure.getMessage(),
-                "INSERT_REJECTED"
-        ));
     }
 
     /** Adapts the writer's fallback hook to the file-based last resort below. */
