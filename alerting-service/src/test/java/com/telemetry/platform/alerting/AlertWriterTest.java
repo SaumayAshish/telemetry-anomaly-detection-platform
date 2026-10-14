@@ -1,3 +1,4 @@
+
 package com.telemetry.platform.alerting;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,16 +26,32 @@ class AlertWriterTest {
             new RecordPosition("telemetry.sensor.anomalies.v1", 2, 17L);
 
     private static final AnomalyEvent EVENT = new AnomalyEvent(
-            "sensor-1", Instant.parse("2026-10-13T10:15:30Z"), 9.5, 2.0, 1.5, 5.0, 3L, AnomalySeverity.HIGH);
+            "sensor-1",
+            Instant.parse("2026-10-13T10:15:30Z"),
+            9.5,
+            2.0,
+            1.5,
+            5.0,
+            3L,
+            AnomalySeverity.HIGH);
 
     private static final DeadLetter LETTER =
-            new DeadLetter("sensor-1", "{\"bad\":true}", "VALIDATION", "value: must be finite", "VALIDATION");
+            new DeadLetter(
+                    "sensor-1",
+                    "{\"bad\":true}",
+                    "VALIDATION",
+                    "value: must be finite",
+                    "VALIDATION");
 
-    private record FallbackCall(RecordPosition position, DeadLetter letter, SQLException failure) {
+    private record FallbackCall(
+            RecordPosition position,
+            DeadLetter letter,
+            SQLException failure) {
     }
 
     private final FakeDatabase db = new FakeDatabase();
     private final List<FallbackCall> fallbackCalls = new ArrayList<>();
+    private final List<Long> sleeps = new ArrayList<>();
 
     @Test
     void insertsAnAlertOnAHealthyConnection() throws Exception {
@@ -83,6 +100,7 @@ class AlertWriterTest {
         assertThat(db.connectCount()).isEqualTo(2);
         assertThat(db.closedConnections()).containsExactly(1);
         assertThat(db.alertInsertAttempts()).isEqualTo(2);
+        assertThat(sleeps).containsExactly(1_000L);
     }
 
     @Test
@@ -118,6 +136,7 @@ class AlertWriterTest {
 
         assertThat(db.deadLetterInsertAttempts()).isEqualTo(2);
         assertThat(db.connectCount()).isEqualTo(2);
+        assertThat(sleeps).containsExactly(1_000L);
         assertThat(fallbackCalls).isEmpty();
     }
 
@@ -150,24 +169,113 @@ class AlertWriterTest {
     @Test
     void shutdownDuringAReconnectPropagatesTheInterruption() throws Exception {
         AtomicInteger connects = new AtomicInteger();
+
         AlertWriter writer = new AlertWriter(
                 () -> {
                     if (connects.incrementAndGet() > 1) {
                         throw new InterruptedException("shutdown");
                     }
+
                     return db.source().connect();
                 },
-                this::recordFallback);
+                this::recordFallback,
+                this::recordSleep);
+
         db.nextValidityCheckFails();
 
-        assertThatThrownBy(() -> writer.persist(POSITION, EVENT)).isInstanceOf(InterruptedException.class);
+        assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
+                .isInstanceOf(InterruptedException.class);
+    }
+
+    @Test
+    void shutdownDuringBackoffPropagatesTheInterruptionBeforeReconnecting()
+            throws Exception {
+
+        db.alertInsertThrows(new SQLException("connection lost", "08006"));
+
+        AlertWriter writer = new AlertWriter(
+                db.source(),
+                this::recordFallback,
+                millis -> {
+                    throw new InterruptedException("shutdown");
+                });
+
+        assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
+                .isInstanceOf(InterruptedException.class);
+
+        assertThat(db.connectCount()).isEqualTo(1);
+    }
+
+    @Test
+    void givesUpInsteadOfReconnectingForeverWhenAnInsertKeepsFailing()
+            throws Exception {
+
+        for (int i = 0; i < 100; i++) {
+            db.alertInsertThrows(new SQLException("disk full", "53100"));
+        }
+
+        AlertWriter writer =
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep);
+
+        assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
+                .isInstanceOf(SQLException.class);
+
+        assertThat(db.alertInsertAttempts()).isEqualTo(5);
+        assertThat(sleeps).containsExactly(1_000L, 2_000L, 4_000L, 8_000L);
+    }
+
+    @Test
+    void givesUpInsteadOfReconnectingForeverWhenADeadLetterWriteKeepsFailing()
+            throws Exception {
+
+        for (int i = 0; i < 100; i++) {
+            db.deadLetterInsertThrows(new SQLException("disk full", "53100"));
+        }
+
+        AlertWriter writer =
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep);
+
+        assertThatThrownBy(() -> writer.deadLetter(POSITION, LETTER))
+                .isInstanceOf(SQLException.class);
+
+        assertThat(db.deadLetterInsertAttempts()).isEqualTo(5);
+        assertThat(sleeps).containsExactly(1_000L, 2_000L, 4_000L, 8_000L);
+        assertThat(fallbackCalls).isEmpty();
+    }
+
+    /**
+     * Fails the test instead of letting a runaway retry loop spin forever.
+     */
+    private AlertWriter.ConnectionSource boundedSource(int maxConnections) {
+        AtomicInteger connects = new AtomicInteger();
+
+        return () -> {
+            if (connects.incrementAndGet() > maxConnections) {
+                throw new AssertionError(
+                        "still reconnecting after " + maxConnections
+                                + " connections: no retry cap");
+            }
+
+            return db.source().connect();
+        };
     }
 
     private AlertWriter newWriter() throws Exception {
-        return new AlertWriter(db.source(), this::recordFallback);
+        return new AlertWriter(
+                db.source(),
+                this::recordFallback,
+                this::recordSleep);
     }
 
-    private void recordFallback(RecordPosition position, DeadLetter letter, SQLException failure) {
+    private void recordFallback(
+            RecordPosition position,
+            DeadLetter letter,
+            SQLException failure) {
+
         fallbackCalls.add(new FallbackCall(position, letter, failure));
+    }
+
+    private void recordSleep(long millis) {
+        sleeps.add(millis);
     }
 }

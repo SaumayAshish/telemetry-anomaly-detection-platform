@@ -131,7 +131,8 @@ public class AlertConsumer {
         try {
             writer = new AlertWriter(
                     AlertConsumer::connectWithRetry,
-                    AlertConsumer::writeFallback
+                    AlertConsumer::writeFallback,
+                    AlertConsumer::sleepUnlessShuttingDown
             );
 
             RecordProcessor processor =
