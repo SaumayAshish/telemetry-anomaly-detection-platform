@@ -142,7 +142,7 @@ public class AlertConsumer {
         // A stop() that arrived before the consumer existed must still end this run.
         if (shuttingDown) {
             consumer.wakeup();
-        };
+        }
 
         AlertWriter writer = null;
 
