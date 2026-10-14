@@ -47,6 +47,7 @@ public class AlertConsumer {
 
     private static final long SHUTDOWN_CHECK_INTERVAL_MS = 200;
     private static volatile boolean shuttingDown = false;
+    private static volatile KafkaConsumer<String, String> activeConsumer;
 
     private static final ValidatorFactory VALIDATOR_FACTORY =
             Validation.buildDefaultValidatorFactory();
@@ -74,8 +75,34 @@ public class AlertConsumer {
 
     public static void main(String[] args) {
 
-        config = AlertConsumerConfig.fromEnvironment();
-        log.info("Configuration loaded: {}", config);
+        AlertConsumerConfig loaded = AlertConsumerConfig.fromEnvironment();
+        log.info("Configuration loaded: {}", loaded);
+
+        Thread mainThread = Thread.currentThread();
+
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(() -> {
+                    log.info("Shutdown signal received, waking up consumer");
+
+                    stop();
+
+                    try {
+                        mainThread.join();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                })
+        );
+
+        run(loaded);
+    }
+
+    /**
+     * Runs the consume loop until {@link #stop()} is called. Blocks the calling thread.
+     */
+    static void run(AlertConsumerConfig runConfig) {
+
+        config = runConfig;
 
         Properties props = new Properties();
 
@@ -110,22 +137,12 @@ public class AlertConsumer {
 
         consumer.subscribe(List.of(ANOMALY_TOPIC));
 
-        Thread mainThread = Thread.currentThread();
+        activeConsumer = consumer;
 
-        Runtime.getRuntime().addShutdownHook(
-                new Thread(() -> {
-                    log.info("Shutdown signal received, waking up consumer");
-
-                    shuttingDown = true;
-                    consumer.wakeup();
-
-                    try {
-                        mainThread.join();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                })
-        );
+        // A stop() that arrived before the consumer existed must still end this run.
+        if (shuttingDown) {
+            consumer.wakeup();
+        };
 
         AlertWriter writer = null;
 
@@ -194,9 +211,24 @@ public class AlertConsumer {
             }
 
             consumer.close();
+            activeConsumer = null;
 
             log.info("Consumer closed cleanly");
         }
+    }
+    /** Asks a running {@link #run} to finish its current batch and return. */
+    static void stop() {
+        shuttingDown = true;
+
+        KafkaConsumer<String, String> running = activeConsumer;
+        if (running != null) {
+            running.wakeup();
+        }
+    }
+
+    /** Clears the stop request so {@link #run} can be started again in the same JVM. */
+    static void resetForNextRun() {
+        shuttingDown = false;
     }
 
     /** Adapts the writer's fallback hook to the file-based last resort below. */
