@@ -3,6 +3,9 @@ package com.telemetry.platform.alerting;
 import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
 import java.sql.SQLException;
 import java.util.List;
+import org.apache.kafka.clients.consumer.CommitFailedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * One poll-process-commit cycle of the consumer. Offsets are committed only after every
@@ -10,6 +13,8 @@ import java.util.List;
  * idempotent insert absorbs the duplicates.
  */
 final class BatchLoop {
+
+    private static final Logger log = LoggerFactory.getLogger(BatchLoop.class);
 
     record PolledRecord(RecordPosition position, String value) {
     }
@@ -43,7 +48,18 @@ final class BatchLoop {
         }
 
         if (!batch.isEmpty()) {
-            source.commit();
+            try {
+                source.commit();
+            } catch (CommitFailedException e) {
+                // The group moved our partitions while the batch was processed. Every record
+                // was already persisted or dead-lettered, so the next poll redelivers them
+                // and the idempotent insert turns them into duplicates.
+                log.warn(
+                        "COMMIT_LOST batchSize={} exception={}",
+                        batch.size(),
+                        e.getClass().getSimpleName()
+                );
+            }
         }
 
         return batch.size();

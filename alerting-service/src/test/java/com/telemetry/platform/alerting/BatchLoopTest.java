@@ -72,16 +72,40 @@ class BatchLoopTest {
         assertThat(events).containsExactly("process:0");
     }
 
-    // Characterization of a known gap (open decision 2): a commit rejected because the
-    // consumer was evicted from the group propagates and crashes main. The next commit
-    // flips this test.
+    // Open decision 2: a commit rejected because the group moved this consumer's partitions
+    // happens after every record was handled, and the idempotent insert absorbs the
+    // redelivery, so the loop carries on instead of crashing main.
     @Test
-    void propagatesACommitFailure() {
-        nextBatch = List.of(record(0));
+    void survivesACommitRejectedByTheGroup() throws Exception {
+        nextBatch = List.of(record(0), record(1));
         commitFailure = new CommitFailedException();
 
-        assertThatThrownBy(loop::runOnce).isInstanceOf(CommitFailedException.class);
+        int delivered = loop.runOnce();
 
-        assertThat(events).containsExactly("process:0", "commit");
+        assertThat(delivered).isEqualTo(2);
+        assertThat(events).containsExactly("process:0", "process:1", "commit");
+    }
+
+    @Test
+    void keepsWorkingOnTheNextCycleAfterALostCommit() throws Exception {
+        nextBatch = List.of(record(0));
+        commitFailure = new CommitFailedException();
+        loop.runOnce();
+
+        commitFailure = null;
+        nextBatch = List.of(record(0), record(1));
+        int delivered = loop.runOnce();
+
+        assertThat(delivered).isEqualTo(2);
+        assertThat(events)
+                .containsExactly("process:0", "commit", "process:0", "process:1", "commit");
+    }
+
+    @Test
+    void doesNotSwallowOtherCommitFailures() {
+        nextBatch = List.of(record(0));
+        commitFailure = new IllegalStateException("consumer closed");
+
+        assertThatThrownBy(loop::runOnce).isInstanceOf(IllegalStateException.class);
     }
 }
