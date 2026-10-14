@@ -140,11 +140,10 @@ class RecordProcessorTest {
         assertThat(letter.reason()).isEqualTo("INSERT_REJECTED");
     }
 
-    // Characterization of a known gap: the rejected event is re-serialized for the dead
-    // letter, and if that fails the alert is dropped (logged at ERROR) although the raw
-    // payload is still at hand. A later commit decides whether to dead-letter the raw payload.
+    // Regression guard for the old lost-alert gap: the dead letter must carry the raw
+    // payload, so a failing re-serialization can never drop the alert.
     @Test
-    void losesTheAlertWhenARejectedEventCannotBeReserialized() throws Exception {
+    void deadLettersTheRawPayloadEvenWhenTheEventCannotBeReserialized() throws Exception {
         String payload = mapper.writeValueAsString(EVENT);
         sink.nextResult = PersistResult.rejected(new SQLException("unknown sensor", "23503"));
         RecordProcessor processor =
@@ -153,9 +152,24 @@ class RecordProcessorTest {
         processor.process(POSITION, payload);
 
         assertThat(sink.persisted).hasSize(1);
-        assertThat(sink.deadLetters).isEmpty();
-    }
+        assertThat(sink.deadLetters).hasSize(1);
 
+        DeadLetter letter = sink.deadLetters.get(0).letter();
+        assertThat(letter.payload()).isEqualTo(payload);
+        assertThat(letter.sqlState()).isEqualTo("23503");
+        assertThat(letter.reason()).isEqualTo("INSERT_REJECTED");
+    }
+    @Test
+    void deadLettersARejectedEventExactlyAsReceived() throws Exception {
+        String json = mapper.writeValueAsString(EVENT);
+        String withExtraField = json.substring(0, json.length() - 1) + ",\"futureField\":1}";
+        sink.nextResult = PersistResult.rejected(new SQLException("unknown sensor", "23503"));
+
+        processor(noViolations()).process(POSITION, withExtraField);
+
+        assertThat(sink.deadLetters).hasSize(1);
+        assertThat(sink.deadLetters.get(0).letter().payload()).isEqualTo(withExtraField);
+    }
     @Test
     void propagatesADatabaseFailureFromTheSink() throws Exception {
         sink.persistFailure = new SQLException("cannot reconnect", "08001");

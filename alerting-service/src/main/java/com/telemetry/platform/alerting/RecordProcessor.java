@@ -147,6 +147,7 @@ final class RecordProcessor {
             case REJECTED -> deadLetterRejectedInsert(
                     position,
                     event,
+                    rawPayload,
                     result.failure()
             );
         }
@@ -154,11 +155,14 @@ final class RecordProcessor {
 
     /**
      * The database permanently refused this alert (for example a constraint violation).
-     * Capture the event in the dead-letter table with the real SQLState.
+     * Capture the payload exactly as Kafka delivered it, with the real SQLState. Using the
+     * raw payload means no second serialization step can lose the alert, and the dead letter
+     * keeps fields this consumer does not know about.
      */
     private void deadLetterRejectedInsert(
             RecordPosition position,
             AnomalyEvent event,
+            String rawPayload,
             SQLException failure
     ) throws SQLException, InterruptedException {
 
@@ -171,27 +175,9 @@ final class RecordProcessor {
                 failure.getSQLState()
         );
 
-        String failurePayload;
-
-        try {
-            failurePayload = mapper.writeValueAsString(event);
-
-        } catch (JsonProcessingException je) {
-            log.error(
-                    "Could not serialize event for dead-letter capture, alert permanently lost topic={} partition={} offset={} sensorId={} exception={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    LogSanitizer.safe(event.sensorId()),
-                    je.getClass().getSimpleName()
-            );
-
-            return;
-        }
-
         sink.deadLetter(position, new DeadLetter(
                 event.sensorId(),
-                failurePayload,
+                rawPayload,
                 failure.getSQLState(),
                 failure.getMessage(),
                 "INSERT_REJECTED"
