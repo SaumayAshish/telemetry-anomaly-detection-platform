@@ -1,3 +1,4 @@
+
 package com.telemetry.platform.alerting;
 
 import com.telemetry.platform.events.AnomalyEvent;
@@ -18,7 +19,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Not thread-safe: the consumer loop is the only caller.
  */
-final class AlertWriter implements AutoCloseable {
+final class AlertWriter implements AlertSink, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(AlertWriter.class);
 
@@ -32,10 +33,19 @@ final class AlertWriter implements AutoCloseable {
      * A message that could not become an alert. {@code sqlState} is what the {@code sql_state}
      * column stores (a SQLState or a category label); {@code reason} is only for the log line.
      */
-    record DeadLetter(String sensorId, String payload, String sqlState, String errorMessage, String reason) {
+    record DeadLetter(
+            String sensorId,
+            String payload,
+            String sqlState,
+            String errorMessage,
+            String reason) {
     }
 
-    enum Outcome { INSERTED, DUPLICATE, REJECTED }
+    enum Outcome {
+        INSERTED,
+        DUPLICATE,
+        REJECTED
+    }
 
     /** {@code failure} is set only when the outcome is {@link Outcome#REJECTED}. */
     record PersistResult(Outcome outcome, SQLException failure) {
@@ -55,14 +65,19 @@ final class AlertWriter implements AutoCloseable {
 
     @FunctionalInterface
     interface ConnectionSource {
+
         /** Blocks until a connection is available; throws only if shutdown interrupts the wait. */
-        Connection connect() throws InterruptedException;
+        Connection connect() throws InterruptedException, SQLException;
     }
 
     /** Last resort for a dead letter the table permanently refuses. */
     @FunctionalInterface
     interface Fallback {
-        void write(RecordPosition position, DeadLetter letter, SQLException deadLetterWriteFailure);
+
+        void write(
+                RecordPosition position,
+                DeadLetter letter,
+                SQLException deadLetterWriteFailure);
     }
 
     private final ConnectionSource connections;
@@ -74,8 +89,10 @@ final class AlertWriter implements AutoCloseable {
 
     AlertWriter(ConnectionSource connections, Fallback fallback)
             throws SQLException, InterruptedException {
+
         this.connections = connections;
         this.fallback = fallback;
+
         try {
             open();
         } catch (SQLException | InterruptedException e) {
@@ -91,7 +108,8 @@ final class AlertWriter implements AutoCloseable {
      *         (a permanent failure; the caller decides what to dead-letter)
      * @throws SQLException if reconnecting itself fails
      */
-    PersistResult persist(RecordPosition position, AnomalyEvent event)
+    @Override
+    public PersistResult persist(RecordPosition position, AnomalyEvent event)
             throws SQLException, InterruptedException {
 
         while (true) {
@@ -99,9 +117,14 @@ final class AlertWriter implements AutoCloseable {
                 ensureValid(position);
 
                 boolean inserted = AlertStore.persistAlert(
-                        insertAlert, event, position.partition(), position.offset());
+                        insertAlert,
+                        event,
+                        position.partition(),
+                        position.offset());
 
-                return inserted ? PersistResult.inserted() : PersistResult.duplicate();
+                return inserted
+                        ? PersistResult.inserted()
+                        : PersistResult.duplicate();
 
             } catch (SQLException e) {
                 if (!SqlFailureClassifier.isRetryable(e)) {
@@ -109,8 +132,12 @@ final class AlertWriter implements AutoCloseable {
                 }
 
                 log.warn(
-                        "Transient database error persisting alert, reconnecting topic={} partition={} offset={} sqlState={}",
-                        position.topic(), position.partition(), position.offset(), e.getSQLState());
+                        "Transient database error persisting alert, reconnecting "
+                                + "topic={} partition={} offset={} sqlState={}",
+                        position.topic(),
+                        position.partition(),
+                        position.offset(),
+                        e.getSQLState());
 
                 reconnect();
             }
@@ -118,10 +145,11 @@ final class AlertWriter implements AutoCloseable {
     }
 
     /**
-     * Writes one dead letter, retrying transient failures on a fresh connection. A permanent
-     * refusal by the table goes to the {@link Fallback} instead of being thrown.
+     * Writes one dead letter, retrying transient failures on a fresh connection.
+     * A permanent refusal by the table goes to the {@link Fallback} instead of being thrown.
      */
-    void deadLetter(RecordPosition position, DeadLetter letter)
+    @Override
+    public void deadLetter(RecordPosition position, DeadLetter letter)
             throws SQLException, InterruptedException {
 
         while (true) {
@@ -148,8 +176,12 @@ final class AlertWriter implements AutoCloseable {
                 }
 
                 log.warn(
-                        "Transient database error writing dead letter, reconnecting topic={} partition={} offset={} sqlState={}",
-                        position.topic(), position.partition(), position.offset(), e.getSQLState());
+                        "Transient database error writing dead letter, reconnecting "
+                                + "topic={} partition={} offset={} sqlState={}",
+                        position.topic(),
+                        position.partition(),
+                        position.offset(),
+                        e.getSQLState());
 
                 reconnect();
             }
@@ -161,13 +193,22 @@ final class AlertWriter implements AutoCloseable {
         closeQuietly(insertAlert);
         closeQuietly(insertDeadLetter);
         closeQuietly(connection);
+
+        insertAlert = null;
+        insertDeadLetter = null;
+        connection = null;
     }
 
-    private void ensureValid(RecordPosition position) throws SQLException, InterruptedException {
+    private void ensureValid(RecordPosition position)
+            throws SQLException, InterruptedException {
+
         if (!connection.isValid(VALIDITY_CHECK_TIMEOUT_SECONDS)) {
             log.warn(
-                    "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
-                    position.topic(), position.partition(), position.offset());
+                    "Database connection no longer valid, reconnecting "
+                            + "topic={} partition={} offset={}",
+                    position.topic(),
+                    position.partition(),
+                    position.offset());
 
             reconnect();
         }
@@ -192,21 +233,33 @@ final class AlertWriter implements AutoCloseable {
         try {
             resource.close();
         } catch (Exception e) {
-            log.warn("Error closing resource exception={}", e.getClass().getSimpleName());
+            log.warn(
+                    "Error closing resource exception={}",
+                    e.getClass().getSimpleName());
         }
     }
 
-    private static void logDeadLetterOutcome(boolean isNew, RecordPosition position, DeadLetter letter) {
+    private static void logDeadLetterOutcome(
+            boolean isNew,
+            RecordPosition position,
+            DeadLetter letter) {
+
         if (isNew) {
             log.warn(
                     "DEAD_LETTERED topic={} partition={} offset={} sensorId={} reason={}",
-                    position.topic(), position.partition(), position.offset(),
-                    LogSanitizer.safe(letter.sensorId()), letter.reason());
+                    position.topic(),
+                    position.partition(),
+                    position.offset(),
+                    LogSanitizer.safe(letter.sensorId()),
+                    letter.reason());
         } else {
             log.info(
                     "DEAD_LETTER_DUPLICATE topic={} partition={} offset={} sensorId={} reason={}",
-                    position.topic(), position.partition(), position.offset(),
-                    LogSanitizer.safe(letter.sensorId()), letter.reason());
+                    position.topic(),
+                    position.partition(),
+                    position.offset(),
+                    LogSanitizer.safe(letter.sensorId()),
+                    letter.reason());
         }
     }
 }
