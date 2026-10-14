@@ -3,12 +3,12 @@ package com.telemetry.platform.alerting;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.telemetry.platform.alerting.AlertWriter.DeadLetter;
 import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
+import com.telemetry.platform.alerting.BatchLoop.PolledRecord;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -28,6 +28,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,25 +139,35 @@ public class AlertConsumer {
             RecordProcessor processor =
                     new RecordProcessor(writer, OBJECT_MAPPER, VALIDATOR);
 
-            while (true) {
+            BatchLoop.BatchSource source = new BatchLoop.BatchSource() {
+                @Override
+                public List<PolledRecord> poll() {
+                    List<PolledRecord> batch = new ArrayList<>();
 
-                ConsumerRecords<String, String> records =
-                        consumer.poll(POLL_TIMEOUT);
+                    for (ConsumerRecord<String, String> record : consumer.poll(POLL_TIMEOUT)) {
+                        batch.add(new PolledRecord(
+                                new RecordPosition(
+                                        record.topic(),
+                                        record.partition(),
+                                        record.offset()
+                                ),
+                                record.value()
+                        ));
+                    }
 
-                for (ConsumerRecord<String, String> record : records) {
-                    RecordPosition position = new RecordPosition(
-                            record.topic(),
-                            record.partition(),
-                            record.offset()
-                    );
-
-                    processor.process(position, record.value());
+                    return batch;
                 }
 
-                // Commit only after the polled batch has been processed.
-                if (!records.isEmpty()) {
+                @Override
+                public void commit() {
                     consumer.commitSync();
                 }
+            };
+
+            BatchLoop loop = new BatchLoop(source, processor::process);
+
+            while (true) {
+                loop.runOnce();
             }
 
         } catch (WakeupException e) {

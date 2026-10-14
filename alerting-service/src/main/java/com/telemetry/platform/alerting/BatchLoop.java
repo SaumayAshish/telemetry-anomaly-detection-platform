@@ -1,0 +1,51 @@
+package com.telemetry.platform.alerting;
+
+import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
+import java.sql.SQLException;
+import java.util.List;
+
+/**
+ * One poll-process-commit cycle of the consumer. Offsets are committed only after every
+ * record of the polled batch has been handled, so a crash redelivers the batch and the
+ * idempotent insert absorbs the duplicates.
+ */
+final class BatchLoop {
+
+    record PolledRecord(RecordPosition position, String value) {
+    }
+
+    /** The slice of the Kafka consumer this loop needs. */
+    interface BatchSource {
+        List<PolledRecord> poll();
+
+        void commit();
+    }
+
+    interface RecordHandler {
+        void process(RecordPosition position, String rawPayload)
+                throws SQLException, InterruptedException;
+    }
+
+    private final BatchSource source;
+    private final RecordHandler handler;
+
+    BatchLoop(BatchSource source, RecordHandler handler) {
+        this.source = source;
+        this.handler = handler;
+    }
+
+    /** Runs one cycle and returns how many records the poll delivered. */
+    int runOnce() throws SQLException, InterruptedException {
+        List<PolledRecord> batch = source.poll();
+
+        for (PolledRecord record : batch) {
+            handler.process(record.position(), record.value());
+        }
+
+        if (!batch.isEmpty()) {
+            source.commit();
+        }
+
+        return batch.size();
+    }
+}
