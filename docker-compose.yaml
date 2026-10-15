@@ -8,10 +8,11 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # PLAINTEXT is for clients on the host; INTERNAL is for containers on the compose network.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:19092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     volumes:
@@ -26,9 +27,29 @@ services:
     environment:
       POSTGRES_DB: telemetry
       POSTGRES_USER: telemetry_app
-      POSTGRES_PASSWORD: localdevpassword
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-localdevpassword}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry_app -d telemetry"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - timescale-data:/var/lib/postgresql/data
+
+  # One-shot schema migration: the only thing that changes the schema. Run it before the services.
+  migrate:
+    build:
+      context: ./db-migrations
+    profiles: [ "pipeline" ]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      FLYWAY_URL: jdbc:postgresql://timescaledb:5432/telemetry
+      FLYWAY_USER: telemetry_app
+      FLYWAY_PASSWORD: ${DB_PASSWORD:-localdevpassword}
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+    command: migrate
 
 volumes:
   kafka-data:
