@@ -30,7 +30,9 @@ public class SensorTelemetryProducer {
 
     public static void main(String[] args) throws Exception {
         Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        String bootstrapServers = IngestionSettings.bootstrapServers();
+        System.out.println("Kafka bootstrap servers: " + bootstrapServers);
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
