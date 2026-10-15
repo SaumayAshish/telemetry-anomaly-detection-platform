@@ -53,7 +53,9 @@ public class AnomalyDetectionStreamApp {
     public static void main(String[] args) {
         Properties props = new Properties();
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, "anomaly-detection-stream-app");
-        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        String bootstrapServers = StreamsSettings.bootstrapServers();
+        System.out.println("Kafka bootstrap servers: " + bootstrapServers);
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
 
         Serde<SensorReading> sensorReadingSerde = jsonSerde(SensorReading.class);
         Serde<RollingStats> rollingStatsSerde = jsonSerde(RollingStats.class);
