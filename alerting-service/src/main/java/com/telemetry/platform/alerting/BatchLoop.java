@@ -33,10 +33,16 @@ final class BatchLoop {
 
     private final BatchSource source;
     private final RecordHandler handler;
+    private final AlertMetrics metrics;
 
     BatchLoop(BatchSource source, RecordHandler handler) {
+        this(source, handler, AlertMetrics.create());
+    }
+
+    BatchLoop(BatchSource source, RecordHandler handler, AlertMetrics metrics) {
         this.source = source;
         this.handler = handler;
+        this.metrics = metrics;
     }
 
     /** Runs one cycle and returns how many records the poll delivered. */
@@ -59,6 +65,7 @@ final class BatchLoop {
                         batch.size(),
                         e.getClass().getSimpleName()
                 );
+                metrics.commitLost();
             }
         }
 

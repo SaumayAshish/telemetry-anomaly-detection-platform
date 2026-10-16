@@ -30,11 +30,17 @@ final class RecordProcessor {
     private final AlertSink sink;
     private final ObjectMapper mapper;
     private final Validator validator;
+    private final AlertMetrics metrics;
 
     RecordProcessor(AlertSink sink, ObjectMapper mapper, Validator validator) {
+        this(sink, mapper, validator, AlertMetrics.create());
+    }
+
+    RecordProcessor(AlertSink sink, ObjectMapper mapper, Validator validator, AlertMetrics metrics) {
         this.sink = sink;
         this.mapper = mapper;
         this.validator = validator;
+        this.metrics = metrics;
     }
 
     /** The mapper the consumer uses for events and for the local fallback file. */
@@ -87,6 +93,7 @@ final class RecordProcessor {
                     deserializationFailure.getMessage(),
                     "DESERIALIZATION"
             ));
+            metrics.deadLettered("DESERIALIZATION");
 
             // Malformed messages never reach validation or persistence.
             return;
@@ -119,6 +126,7 @@ final class RecordProcessor {
                     violationSummary,
                     "VALIDATION"
             ));
+            metrics.deadLettered("VALIDATION");
 
             // Invalid events never reach persistence.
             return;
@@ -127,22 +135,28 @@ final class RecordProcessor {
         PersistResult result = sink.persist(position, event);
 
         switch (result.outcome()) {
-            case INSERTED -> log.info(
-                    "ALERT_PERSISTED topic={} partition={} offset={} sensorId={} severity={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    LogSanitizer.safe(event.sensorId()),
-                    event.severity()
-            );
+            case INSERTED -> {
+                log.info(
+                        "ALERT_PERSISTED topic={} partition={} offset={} sensorId={} severity={}",
+                        position.topic(),
+                        position.partition(),
+                        position.offset(),
+                        LogSanitizer.safe(event.sensorId()),
+                        event.severity()
+                );
+                metrics.alertPersisted(event.severity());
+            }
 
-            case DUPLICATE -> log.info(
-                    "ALERT_DUPLICATE topic={} partition={} offset={} sensorId={}",
-                    position.topic(),
-                    position.partition(),
-                    position.offset(),
-                    LogSanitizer.safe(event.sensorId())
-            );
+            case DUPLICATE -> {
+                log.info(
+                        "ALERT_DUPLICATE topic={} partition={} offset={} sensorId={}",
+                        position.topic(),
+                        position.partition(),
+                        position.offset(),
+                        LogSanitizer.safe(event.sensorId())
+                );
+                metrics.alertDuplicate();
+            }
 
             case REJECTED -> deadLetterRejectedInsert(
                     position,
@@ -182,5 +196,6 @@ final class RecordProcessor {
                 failure.getMessage(),
                 "INSERT_REJECTED"
         ));
+        metrics.deadLettered("INSERT_REJECTED");
     }
 }
