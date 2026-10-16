@@ -11,6 +11,7 @@ import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
 import com.telemetry.platform.events.AnomalyEvent;
 import com.telemetry.platform.events.AnomalySeverity;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -77,7 +78,10 @@ class AlertWriterTest {
 
     @Test
     void reconnectsBeforeWritingWhenTheConnectionWentStale() throws Exception {
-        AlertWriter writer = newWriter();
+        long[] now = {0L};
+        AlertWriter writer = new AlertWriter(
+                db.source(), this::recordFallback, this::recordSleep, () -> now[0]);
+        now[0] += Duration.ofSeconds(31).toNanos();
         db.nextValidityCheckFails();
 
         PersistResult result = writer.persist(POSITION, EVENT);
@@ -168,6 +172,7 @@ class AlertWriterTest {
 
     @Test
     void shutdownDuringAReconnectPropagatesTheInterruption() throws Exception {
+        long[] now = {0L};
         AtomicInteger connects = new AtomicInteger();
 
         AlertWriter writer = new AlertWriter(
@@ -179,8 +184,10 @@ class AlertWriterTest {
                     return db.source().connect();
                 },
                 this::recordFallback,
-                this::recordSleep);
+                this::recordSleep,
+                () -> now[0]);
 
+        now[0] += Duration.ofSeconds(31).toNanos();
         db.nextValidityCheckFails();
 
         assertThatThrownBy(() -> writer.persist(POSITION, EVENT))

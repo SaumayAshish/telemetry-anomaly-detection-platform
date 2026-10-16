@@ -30,6 +30,7 @@ final class FakeDatabase {
     private final AtomicInteger alertInsertAttempts = new AtomicInteger();
     private final AtomicInteger deadLetterInsertAttempts = new AtomicInteger();
     private final AtomicInteger closedStatements = new AtomicInteger();
+    private final AtomicInteger validityChecksMade = new AtomicInteger();
     private final List<Integer> closedConnections = new ArrayList<>();
 
     /** The next alert insert reports this many rows (1 = inserted, 0 = ON CONFLICT ignored it). */
@@ -74,6 +75,10 @@ final class FakeDatabase {
         return closedStatements.get();
     }
 
+    int validityChecksMade() {
+        return validityChecksMade.get();
+    }
+
     /** Ids (1-based, in opening order) of the connections that were closed. */
     List<Integer> closedConnections() {
         return List.copyOf(closedConnections);
@@ -85,6 +90,7 @@ final class FakeDatabase {
         return proxy(Connection.class, "fakeConnection#" + id, (method, args) -> {
             switch (method.getName()) {
                 case "isValid":
+                    validityChecksMade.incrementAndGet();
                     return validityChecks.isEmpty() || validityChecks.removeFirst();
                 case "prepareStatement":
                     return newStatement((String) args[0]);

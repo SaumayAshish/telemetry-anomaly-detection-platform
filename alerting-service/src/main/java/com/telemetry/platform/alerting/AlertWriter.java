@@ -4,6 +4,8 @@ import com.telemetry.platform.events.AnomalyEvent;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +31,13 @@ final class AlertWriter implements AlertSink, AutoCloseable {
 
     private static final int VALIDITY_CHECK_TIMEOUT_SECONDS = 2;
 
+    /**
+     * A connection used more recently than this is trusted without a validity check: the check is a
+     * network round trip, and a write that fails on a dead connection reconnects and retries anyway.
+     * After a longer idle spell the bounded check still runs, so a half-open connection costs at
+     * most {@value #VALIDITY_CHECK_TIMEOUT_SECONDS} seconds, not an unbounded wait.
+     */
+    private static final long IDLE_VALIDATION_THRESHOLD_NANOS = Duration.ofSeconds(30).toNanos();
     /** Attempts per write before giving up; every failed attempt is a transient database error. */
     private static final int MAX_ATTEMPTS = 5;
 
@@ -85,16 +94,24 @@ final class AlertWriter implements AlertSink, AutoCloseable {
     private final ConnectionSource connections;
     private final Fallback fallback;
     private final Sleeper sleeper;
+    private final LongSupplier clock;
 
     private Connection connection;
     private PreparedStatement insertAlert;
     private PreparedStatement insertDeadLetter;
+    private long lastUsedNanos;
 
     AlertWriter(ConnectionSource connections, Fallback fallback, Sleeper sleeper)
+            throws SQLException, InterruptedException {
+        this(connections, fallback, sleeper, System::nanoTime);
+    }
+
+    AlertWriter(ConnectionSource connections, Fallback fallback, Sleeper sleeper, LongSupplier clock)
             throws SQLException, InterruptedException {
         this.connections = connections;
         this.fallback = fallback;
         this.sleeper = sleeper;
+        this.clock = clock;
         try {
             open();
         } catch (SQLException | InterruptedException e) {
@@ -123,6 +140,8 @@ final class AlertWriter implements AlertSink, AutoCloseable {
 
                 boolean inserted = AlertStore.persistAlert(
                         insertAlert, event, position.partition(), position.offset());
+
+                lastUsedNanos = clock.getAsLong();
 
                 return inserted ? PersistResult.inserted() : PersistResult.duplicate();
 
@@ -165,6 +184,7 @@ final class AlertWriter implements AlertSink, AutoCloseable {
                         letter.errorMessage());
 
                 logDeadLetterOutcome(isNew, position, letter);
+                lastUsedNanos = clock.getAsLong();
                 return;
 
             } catch (SQLException e) {
@@ -214,6 +234,10 @@ final class AlertWriter implements AlertSink, AutoCloseable {
     }
 
     private void ensureValid(RecordPosition position) throws SQLException, InterruptedException {
+        if (clock.getAsLong() - lastUsedNanos < IDLE_VALIDATION_THRESHOLD_NANOS) {
+            return;
+        }
+
         if (!connection.isValid(VALIDITY_CHECK_TIMEOUT_SECONDS)) {
             log.warn(
                     "Database connection no longer valid, reconnecting topic={} partition={} offset={}",
@@ -232,6 +256,7 @@ final class AlertWriter implements AlertSink, AutoCloseable {
         connection = connections.connect();
         insertAlert = connection.prepareStatement(AlertStore.INSERT_ALERT_SQL);
         insertDeadLetter = connection.prepareStatement(AlertStore.INSERT_ALERT_DLQ_SQL);
+        lastUsedNanos = clock.getAsLong();
     }
 
     private static void closeQuietly(AutoCloseable resource) {
