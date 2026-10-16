@@ -20,6 +20,7 @@ public class SecurityConfig {
         http
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/prometheus").hasRole("METRICS_READER")
                         .requestMatchers("/api/alerts/**").hasRole("ALERT_READER")
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
