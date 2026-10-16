@@ -124,6 +124,44 @@ services:
       DB_USER: telemetry_app
       DB_PASSWORD: ${DB_PASSWORD:-localdevpassword}
 
+  # Dev-only: writes the JWT public key (from JWT_PUBLIC_KEY_BASE64) into a volume for api-service.
+  jwt-key-init:
+    image: eclipse-temurin:26-jre
+    profiles: ["pipeline"]
+    environment:
+      JWT_PUBLIC_KEY_BASE64: ${JWT_PUBLIC_KEY_BASE64:-}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        test -n "$$JWT_PUBLIC_KEY_BASE64" || { echo "JWT_PUBLIC_KEY_BASE64 is not set"; exit 1; } ;
+        printf -- "-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n" "$$JWT_PUBLIC_KEY_BASE64" > /keys/public.pem
+        && chmod 644 /keys/public.pem
+    volumes:
+      - jwt-keys:/keys
+
+  api:
+    build:
+      context: .
+      args:
+        MODULE: api-service
+    image: telemetry/api-service:dev
+    profiles: ["pipeline"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      jwt-key-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://timescaledb:5432/telemetry
+      SPRING_DATASOURCE_USERNAME: telemetry_app
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-localdevpassword}
+      APP_SECURITY_JWT_PUBLIC_KEY_PATH: /keys/public.pem
+    volumes:
+      - jwt-keys:/keys:ro
 volumes:
   kafka-data:
   timescale-data:
+  jwt-keys:
