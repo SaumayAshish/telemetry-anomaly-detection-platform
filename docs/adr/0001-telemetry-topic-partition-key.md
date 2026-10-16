@@ -81,3 +81,4 @@ Example:
   "value": 72.4,
   "sequenceNumber": 10452
 }
+```
