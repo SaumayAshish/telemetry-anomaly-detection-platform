@@ -41,5 +41,6 @@ The three numbers (3.0, 30 and 10) are constants in `AnomalyDetectionStreamApp`.
 
 - A sustained fault produces up to 10 events, one per anomalous reading, and then the baseline moves and the alerts stop. The alerts table can therefore hold bursts of consecutive events for the same sensor.
 - After a rebaseline the new baseline holds a single reading, and the minimum-sample parameter (30) is passed to the baseline's anomaly check, so that rule governs when scoring resumes.
+- A sensor whose baseline has zero standard deviation (a constant signal) is never scored, and the test uses the absolute z-score, so a spike in either direction counts.
 - Changing a threshold means a code change and a redeploy.
 - The state store name carries a version suffix (`v2`). Changing the state format needs a new name, because Kafka Streams would otherwise read old state with the new format.
