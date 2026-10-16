@@ -15,6 +15,12 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
     volumes:
       - kafka-data:/var/lib/kafka/data
 
@@ -40,7 +46,7 @@ services:
   migrate:
     build:
       context: ./db-migrations
-    profiles: [ "pipeline" ]
+    profiles: ["pipeline"]
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -50,6 +56,73 @@ services:
       FLYWAY_PASSWORD: ${DB_PASSWORD:-localdevpassword}
       FLYWAY_LOCATIONS: filesystem:/flyway/sql
     command: migrate
+
+  # Dev-only: the sensors the simulated producer emits. Not part of the schema migrations.
+  seed-sensors:
+    image: timescale/timescaledb:2.29.2-pg16
+    profiles: ["pipeline"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-localdevpassword}
+    entrypoint: ["psql", "-h", "timescaledb", "-U", "telemetry_app", "-d", "telemetry", "-v", "ON_ERROR_STOP=1", "-c"]
+    command:
+      - >-
+        INSERT INTO sensors (sensor_id, location, install_date, model) VALUES
+        ('S-1001', 'dev-rack-1', DATE '2026-01-01', 'sim-temp'),
+        ('S-1002', 'dev-rack-1', DATE '2026-01-01', 'sim-temp'),
+        ('S-1003', 'dev-rack-2', DATE '2026-01-01', 'sim-temp'),
+        ('S-1004', 'dev-rack-2', DATE '2026-01-01', 'sim-temp'),
+        ('S-1005', 'dev-rack-3', DATE '2026-01-01', 'sim-temp')
+        ON CONFLICT (sensor_id) DO NOTHING
+
+  ingestion:
+    build:
+      context: .
+      args:
+        MODULE: ingestion-service
+    image: telemetry/ingestion-service:dev
+    profiles: ["pipeline"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+  stream-processing:
+    build:
+      context: .
+      args:
+        MODULE: stream-processing-service
+    image: telemetry/stream-processing-service:dev
+    profiles: ["pipeline"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+
+  alerting:
+    build:
+      context: .
+      args:
+        MODULE: alerting-service
+    image: telemetry/alerting-service:dev
+    profiles: ["pipeline"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      seed-sensors:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      DB_URL: jdbc:postgresql://timescaledb:5432/telemetry
+      DB_USER: telemetry_app
+      DB_PASSWORD: ${DB_PASSWORD:-localdevpassword}
 
 volumes:
   kafka-data:
