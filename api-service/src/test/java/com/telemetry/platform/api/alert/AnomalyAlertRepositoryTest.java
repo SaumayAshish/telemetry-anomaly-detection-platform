@@ -13,8 +13,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.core.env.Environment;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -131,6 +133,37 @@ class AnomalyAlertRepositoryTest {
         assertThat(found)
                 .extracting(AnomalyAlert::getReadingTimestamp)
                 .containsExactlyInAnyOrder(T1, T2);
+    }
+
+    @Test
+    void pagesAreOrderedNewestFirstWithTheIdAsTiebreakerAndNeverOverlap() {
+        for (int i = 0; i < 7; i++) {
+            alert("S-A", "HIGH", T1.plusSeconds(i));
+        }
+        for (int i = 0; i < 5; i++) {
+            alert("S-A", "HIGH", T3);
+        }
+        Sort newestFirst = Sort.by(Sort.Order.desc("readingTimestamp"), Sort.Order.desc("id"));
+
+        Page<AnomalyAlert> first = repository.findBySensorId("S-A", PageRequest.of(0, 5, newestFirst));
+        Page<AnomalyAlert> second = repository.findBySensorId("S-A", PageRequest.of(1, 5, newestFirst));
+        Page<AnomalyAlert> third = repository.findBySensorId("S-A", PageRequest.of(2, 5, newestFirst));
+
+        assertThat(first.getTotalElements()).isEqualTo(12);
+        assertThat(first.getTotalPages()).isEqualTo(3);
+        assertThat(first.getContent()).hasSize(5);
+        assertThat(second.getContent()).hasSize(5);
+        assertThat(third.getContent()).hasSize(2);
+
+        List<AnomalyAlert> all = new java.util.ArrayList<>(first.getContent());
+        all.addAll(second.getContent());
+        all.addAll(third.getContent());
+        assertThat(all).extracting(AnomalyAlert::getId).doesNotHaveDuplicates();
+        assertThat(all).extracting(AnomalyAlert::getReadingTimestamp)
+                .isSortedAccordingTo(java.util.Comparator.reverseOrder());
+        assertThat(first.getContent()).extracting(AnomalyAlert::getId)
+                .isSortedAccordingTo(java.util.Comparator.reverseOrder());
+        assertThat(all).allSatisfy(a -> assertThat(Hibernate.isInitialized(a.getSensor())).isTrue());
     }
 
     private void sensor(String sensorId) {
