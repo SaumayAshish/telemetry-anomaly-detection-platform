@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 FROM eclipse-temurin:${JAVA_VERSION}-jre
 ENV TZ=UTC
 RUN groupadd --system app && useradd --system --gid app --uid 10001 --no-create-home app \
-    && mkdir /app && chown app:app /app
+    && mkdir /app /data && chown app:app /app /data
 WORKDIR /app
 COPY --from=build --chown=app:app /out/ /app/
 USER app

@@ -123,6 +123,9 @@ services:
       DB_URL: jdbc:postgresql://timescaledb:5432/telemetry
       DB_USER: telemetry_app
       DB_PASSWORD: ${DB_PASSWORD:-localdevpassword}
+      DLQ_FALLBACK_PATH: /data/dlq-fallback.jsonl
+    volumes:
+      - alerting-data:/data
 
   # Dev-only: writes the JWT public key (from JWT_PUBLIC_KEY_BASE64) into a volume for api-service.
   jwt-key-init:
@@ -165,3 +168,4 @@ volumes:
   kafka-data:
   timescale-data:
   jwt-keys:
+  alerting-data:
