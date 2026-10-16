@@ -1,6 +1,7 @@
 package com.telemetry.platform.api.alert;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,8 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.net.URI;
+import java.sql.SQLNonTransientConnectionException;
+import java.sql.SQLTransientConnectionException;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
@@ -19,6 +22,7 @@ import org.slf4j.MDC;
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+    private static final String RETRY_AFTER_SECONDS = "5";
 
     @ExceptionHandler(InvalidAlertQueryException.class)
     public ProblemDetail handleInvalidQuery(InvalidAlertQueryException ex,
@@ -55,13 +59,30 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ProblemDetail handleUnexpected(Exception ex, HttpServletRequest request) {
+    public ProblemDetail handleUnexpected(Exception ex, HttpServletRequest request,
+                                          HttpServletResponse response) {
 
         String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY);
         if (correlationId == null) {
             correlationId = UUID.randomUUID().toString().substring(0, 8);
         }
 
+        if (isDatabaseUnavailable(ex)) {
+            // The class name only: during an outage every request would otherwise log a stack trace.
+            log.warn("Database unavailable, correlationId={}, path={}, exception={}",
+                    correlationId, request.getRequestURI(), ex.getClass().getSimpleName());
+
+            response.setHeader("Retry-After", RETRY_AFTER_SECONDS);
+
+            ProblemDetail unavailable = ProblemDetail.forStatusAndDetail(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "The service is temporarily unavailable. Please retry shortly.");
+            unavailable.setTitle("Service unavailable");
+            unavailable.setInstance(URI.create(request.getRequestURI()));
+            unavailable.setProperty("code", "SERVICE_UNAVAILABLE");
+            unavailable.setProperty("correlationId", correlationId);
+            return unavailable;
+        }
         // Full detail and stack trace stay on the server, tagged with the same id.
         log.error("Unhandled exception, correlationId={}, path={}",
                 correlationId, request.getRequestURI(), ex);
@@ -73,5 +94,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setProperty("code", "INTERNAL_ERROR");
         problem.setProperty("correlationId", correlationId);
         return problem;
+    }
+
+    // Walks the cause chain: the driver, the pool and Hibernate each wrap the same failure,
+    // so matching one outer class would stop working as soon as a layer changes.
+    private static boolean isDatabaseUnavailable(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof SQLTransientConnectionException
+                    || t instanceof SQLNonTransientConnectionException) {
+                return true;
+            }
+        }
+        return false;
     }
 }
