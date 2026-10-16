@@ -57,7 +57,7 @@ class DatabaseUnavailableWebTest {
 
     @Test
     void aDatabaseOutageGets503WithRetryAfter() throws Exception {
-        when(alertService.findAlerts(any())).thenThrow(outage());
+        when(alertService.findAlerts(any(), any())).thenThrow(outage());
 
         mockMvc.perform(get("/api/alerts").with(reader()))
                 .andExpect(status().isServiceUnavailable())
@@ -69,7 +69,7 @@ class DatabaseUnavailableWebTest {
 
     @Test
     void theOutageResponseDoesNotLeakDriverOrPoolDetails() throws Exception {
-        when(alertService.findAlerts(any())).thenThrow(outage());
+        when(alertService.findAlerts(any(), any())).thenThrow(outage());
 
         String body = mockMvc.perform(get("/api/alerts").with(reader()))
                 .andExpect(status().isServiceUnavailable())
@@ -80,7 +80,7 @@ class DatabaseUnavailableWebTest {
 
     @Test
     void anUnrelatedFailureStillGets500() throws Exception {
-        when(alertService.findAlerts(any())).thenThrow(new IllegalStateException("boom"));
+        when(alertService.findAlerts(any(), any())).thenThrow(new IllegalStateException("boom"));
 
         mockMvc.perform(get("/api/alerts").with(reader()))
                 .andExpect(status().isInternalServerError())
@@ -90,7 +90,7 @@ class DatabaseUnavailableWebTest {
 
     @Test
     void aConstraintViolationIsNotAnOutage() throws Exception {
-        when(alertService.findAlerts(any())).thenThrow(new DataIntegrityViolationException(
+        when(alertService.findAlerts(any(), any())).thenThrow(new DataIntegrityViolationException(
                 "could not execute statement", new SQLIntegrityConstraintViolationException("duplicate key")));
 
         mockMvc.perform(get("/api/alerts").with(reader()))

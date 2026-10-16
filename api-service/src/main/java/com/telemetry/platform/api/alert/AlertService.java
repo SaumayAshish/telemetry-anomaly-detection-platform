@@ -1,9 +1,10 @@
 package com.telemetry.platform.api.alert;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,27 +19,27 @@ public class AlertService {
     }
 
     @Transactional(readOnly = true)
-    public List<AlertResponse> findAlerts(AlertQuery query) {
+    public Page<AlertResponse> findAlerts(AlertQuery query, Pageable pageable) {
 
         String severity = query.normalizedSeverity();
-        List<AnomalyAlert> alerts;
+        Page<AnomalyAlert> alerts;
 
         // AlertQuery validation guarantees a time range arrives alone and complete,
         // so no filter is silently ignored here.
         if (query.from() != null && query.to() != null) {
-            alerts = repository.findByReadingTimestampBetween(query.from(), query.to());
+            alerts = repository.findByReadingTimestampBetween(query.from(), query.to(), pageable);
         } else if (query.sensorId() != null && severity != null) {
-            alerts = repository.findBySensorIdAndSeverity(query.sensorId(), severity);
+            alerts = repository.findBySensorIdAndSeverity(query.sensorId(), severity, pageable);
         } else if (query.sensorId() != null) {
-            alerts = repository.findBySensorId(query.sensorId());
+            alerts = repository.findBySensorId(query.sensorId(), pageable);
         } else if (severity != null) {
-            alerts = repository.findBySeverity(severity);
+            alerts = repository.findBySeverity(severity, pageable);
         } else {
-            alerts = repository.findAllWithSensor();
+            alerts = repository.findAllWithSensor(pageable);
         }
 
-        List<AlertResponse> result = alerts.stream().map(AlertResponse::from).toList();
-        log.info("Alert query returned {} rows", result.size());
+        Page<AlertResponse> result = alerts.map(AlertResponse::from);
+        log.info("Alert query returned {} rows", result.getNumberOfElements());
         return result;
     }
 }

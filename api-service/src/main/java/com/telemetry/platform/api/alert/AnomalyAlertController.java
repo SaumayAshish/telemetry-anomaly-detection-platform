@@ -2,6 +2,7 @@ package com.telemetry.platform.api.alert;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -42,6 +43,6 @@ public class AnomalyAlertController {
                             .toList());
         }
 
-        return alertService.findAlerts(query);
+        return alertService.findAlerts(query, Pageable.unpaged()).getContent();
     }
 }

@@ -4,11 +4,13 @@ import com.telemetry.platform.api.security.ProblemAccessDeniedHandler;
 import com.telemetry.platform.api.security.ProblemAuthenticationEntryPoint;
 import com.telemetry.platform.api.security.SecurityConfig;
 import com.telemetry.platform.api.security.TestJwtSupport;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Page;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -36,6 +38,11 @@ class AlertQueryWebTest {
 
     @MockitoBean
     private AlertService alertService;
+
+    @BeforeEach
+    void defaultEmptyPage() {
+        when(alertService.findAlerts(any(), any())).thenReturn(Page.empty());
+    }
 
     private static RequestPostProcessor reader() {
         return request -> {
@@ -111,13 +118,13 @@ class AlertQueryWebTest {
                 .andExpect(status().isOk());
 
         ArgumentCaptor<AlertQuery> captor = ArgumentCaptor.forClass(AlertQuery.class);
-        verify(alertService).findAlerts(captor.capture());
+        verify(alertService).findAlerts(captor.capture(), any());
         assertThat(captor.getValue().normalizedSeverity()).isEqualTo("CRITICAL");
     }
 
     @Test
     void unexpectedFailureGivesGeneric500WithMatchingCorrelationId() throws Exception {
-        when(alertService.findAlerts(any())).thenThrow(new IllegalStateException("secret detail"));
+        when(alertService.findAlerts(any(), any())).thenThrow(new IllegalStateException("secret detail"));
 
         MvcResult result = mockMvc.perform(get("/api/alerts")
                         .header("X-Correlation-Id", "boom-1")

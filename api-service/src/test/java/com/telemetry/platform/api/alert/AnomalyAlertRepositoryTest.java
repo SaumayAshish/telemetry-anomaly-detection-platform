@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.core.env.Environment;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -47,6 +49,7 @@ class AnomalyAlertRepositoryTest {
     private static final Instant T1 = Instant.parse("2026-10-14T10:00:00Z");
     private static final Instant T2 = Instant.parse("2026-10-14T11:00:00Z");
     private static final Instant T3 = Instant.parse("2026-10-14T12:00:00Z");
+    private static final Pageable PAGE = PageRequest.of(0, 50);
 
     @Autowired
     private AnomalyAlertRepository repository;
@@ -75,7 +78,7 @@ class AnomalyAlertRepositoryTest {
     void mapsEveryColumnOfTheMigratedTable() {
         alert("S-A", "HIGH", T1);
 
-        List<AnomalyAlert> all = repository.findAllWithSensor();
+        List<AnomalyAlert> all = repository.findAllWithSensor(PAGE).getContent();
 
         assertThat(all).hasSize(1);
         AnomalyAlert alert = all.get(0);
@@ -97,7 +100,7 @@ class AnomalyAlertRepositoryTest {
         alert("S-A", "LOW", T2);
         alert("S-B", "HIGH", T3);
 
-        List<AnomalyAlert> found = repository.findBySensorId("S-A");
+        List<AnomalyAlert> found = repository.findBySensorId("S-A", PAGE).getContent();
 
         assertThat(found).hasSize(2);
         assertThat(found).allSatisfy(a -> {
@@ -112,7 +115,7 @@ class AnomalyAlertRepositoryTest {
         alert("S-A", "LOW", T2);
         alert("S-B", "HIGH", T3);
 
-        List<AnomalyAlert> found = repository.findBySensorIdAndSeverity("S-A", "HIGH");
+        List<AnomalyAlert> found = repository.findBySensorIdAndSeverity("S-A", "HIGH", PAGE).getContent();
 
         assertThat(found).extracting(AnomalyAlert::getReadingTimestamp).containsExactly(T1);
     }
@@ -123,7 +126,7 @@ class AnomalyAlertRepositoryTest {
         alert("S-A", "HIGH", T2);
         alert("S-A", "HIGH", T3);
 
-        List<AnomalyAlert> found = repository.findByReadingTimestampBetween(T1, T2);
+        List<AnomalyAlert> found = repository.findByReadingTimestampBetween(T1, T2, PAGE).getContent();
 
         assertThat(found)
                 .extracting(AnomalyAlert::getReadingTimestamp)

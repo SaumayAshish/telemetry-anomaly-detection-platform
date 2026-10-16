@@ -2,10 +2,12 @@ package com.telemetry.platform.api.security;
 
 import com.telemetry.platform.api.alert.AlertService;
 import com.telemetry.platform.api.alert.AnomalyAlertController;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Page;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -14,6 +16,8 @@ import java.util.List;
 import static com.telemetry.platform.api.security.TestJwtSupport.validToken;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -31,6 +35,11 @@ class AlertSecurityWebTest {
 
     @MockitoBean
     private AlertService alertService;
+
+    @BeforeEach
+    void defaultEmptyPage() {
+        when(alertService.findAlerts(any(), any())).thenReturn(Page.empty());
+    }
 
     private static String bearer(String role) {
         return "Bearer " + validToken(List.of(role));

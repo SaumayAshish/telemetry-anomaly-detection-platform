@@ -1,27 +1,28 @@
 package com.telemetry.platform.api.alert;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.Instant;
-import java.util.List;
 
 public interface AnomalyAlertRepository extends JpaRepository<AnomalyAlert, Long> {
 
     @EntityGraph(attributePaths = "sensor")
     @Query("SELECT a FROM AnomalyAlert a")
-    List<AnomalyAlert> findAllWithSensor();
+    Page<AnomalyAlert> findAllWithSensor(Pageable pageable);
 
     @EntityGraph(attributePaths = "sensor")
-    List<AnomalyAlert> findBySensorId(String sensorId);
+    Page<AnomalyAlert> findBySensorId(String sensorId, Pageable pageable);
 
     @EntityGraph(attributePaths = "sensor")
-    List<AnomalyAlert> findBySeverity(String severity);
+    Page<AnomalyAlert> findBySeverity(String severity, Pageable pageable);
 
     @EntityGraph(attributePaths = "sensor")
-    List<AnomalyAlert> findBySensorIdAndSeverity(String sensorId, String severity);
+    Page<AnomalyAlert> findBySensorIdAndSeverity(String sensorId, String severity, Pageable pageable);
 
     @EntityGraph(attributePaths = "sensor")
-    List<AnomalyAlert> findByReadingTimestampBetween(Instant from, Instant to);
+    Page<AnomalyAlert> findByReadingTimestampBetween(Instant from, Instant to, Pageable pageable);
 }
