@@ -21,7 +21,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -56,9 +55,6 @@ public class AlertConsumer {
 
     private static final Duration POLL_TIMEOUT =
             Duration.ofSeconds(1);
-
-    private static final Path DLQ_FALLBACK_FILE =
-            Paths.get("dlq-fallback.jsonl");
 
     private static final DatabaseConnector CONNECTOR = new DatabaseConnector(
             () -> DriverManager.getConnection(
@@ -287,7 +283,7 @@ public class AlertConsumer {
                             + System.lineSeparator();
 
             try (FileChannel channel = FileChannel.open(
-                    DLQ_FALLBACK_FILE,
+                    Path.of(config.dlqFallbackPath()),
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND,
                     StandardOpenOption.WRITE
@@ -305,7 +301,7 @@ public class AlertConsumer {
                     kafkaOffset,
                     safe(sensorId),
                     dlqWriteFailure.getSQLState(),
-                    DLQ_FALLBACK_FILE
+                    config.dlqFallbackPath()
             );
 
         } catch (IOException | RuntimeException fallbackFailure) {

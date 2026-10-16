@@ -8,8 +8,15 @@ public record AlertConsumerConfig(
         String kafkaBootstrapServers,
         String dbUrl,
         String dbUser,
-        String dbPassword) {
+        String dbPassword,
+        String dlqFallbackPath) {
 
+    static final String DEFAULT_DLQ_FALLBACK_PATH = "dlq-fallback.jsonl";
+
+    // The original four-argument form, for callers that do not care where the fallback file goes.
+    public AlertConsumerConfig(String kafkaBootstrapServers, String dbUrl, String dbUser, String dbPassword) {
+        this(kafkaBootstrapServers, dbUrl, dbUser, dbPassword, DEFAULT_DLQ_FALLBACK_PATH);
+    }
     public static AlertConsumerConfig fromEnvironment() {
         return load(System::getenv);
     }
@@ -29,7 +36,14 @@ public record AlertConsumerConfig(
                     "Missing required environment variables: " + String.join(", ", missing));
         }
 
-        return new AlertConsumerConfig(kafka, url, user, password);
+        String fallbackPath = optional(env, "DLQ_FALLBACK_PATH", DEFAULT_DLQ_FALLBACK_PATH);
+
+        return new AlertConsumerConfig(kafka, url, user, password, fallbackPath);
+    }
+
+    private static String optional(Function<String, String> env, String name, String fallback) {
+        String value = env.apply(name);
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 
     private static String require(Function<String, String> env, String name, List<String> missing) {
@@ -47,6 +61,7 @@ public record AlertConsumerConfig(
         return "AlertConsumerConfig[kafkaBootstrapServers=" + kafkaBootstrapServers
                 + ", dbUrl=" + dbUrl
                 + ", dbUser=" + dbUser
-                + ", dbPassword=***]";
+                + ", dbPassword=***"
+                + ", dlqFallbackPath=" + dlqFallbackPath + "]";
     }
 }
