@@ -4,6 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.telemetry.platform.events.AnomalyEvent;
 import com.telemetry.platform.events.AnomalySeverity;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -11,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -166,14 +172,88 @@ class AlertConsumerEndToEndTest {
         assertThat(committedOffset()).as("offset committed by the second run").isEqualTo(2L);
     }
 
+    @Test
+    @Timeout(180)
+    void theMetricsEndpointCountsWhatTheConsumerDid() throws Exception {
+        send("{not json");
+        send(validEventJson());
+
+        Thread consumer = startConsumer(0);
+        int boundPort = -1;
+        try {
+            assertThat(awaitCount("anomaly_alerts", 1)).isEqualTo(1);
+            assertThat(awaitCount("alert_dlq", 1)).isEqualTo(1);
+
+            String scrape = awaitScrape(
+                    "alerting_alerts_persisted_total{severity=\"HIGH\"} 1.0",
+                    "alerting_dead_letters_total{reason=\"DESERIALIZATION\"} 1.0");
+            assertThat(scrape)
+                    .contains("alerting_alerts_persisted_total{severity=\"HIGH\"} 1.0")
+                    .contains("alerting_dead_letters_total{reason=\"DESERIALIZATION\"} 1.0");
+            boundPort = AlertConsumer.metricsPort();
+        } finally {
+            stopConsumer(consumer);
+        }
+
+        assertThat(AlertConsumer.metricsPort()).isEqualTo(-1);
+        assertThat(awaitNothingListensOn(boundPort)).isTrue();
+    }
+
+    // Once run returns, the metrics server must be closed and its port must refuse connections.
+    private static boolean awaitNothingListensOn(int port) throws Exception {
+        HttpClient client = HttpClient.newHttpClient();
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + port + "/metrics")).build();
+                client.send(request, HttpResponse.BodyHandlers.ofString());
+            } catch (IOException refused) {
+                return true;
+            }
+            Thread.sleep(200);
+        }
+        return false;
+    }
+
+    // The counters move just after the row is written, so poll until they show up.
+    private static String awaitScrape(String... expectedLines) throws Exception {
+        HttpClient client = HttpClient.newHttpClient();
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        String last = "";
+        while (System.nanoTime() < deadline) {
+            int port = AlertConsumer.metricsPort();
+            if (port > 0) {
+                try {
+                    HttpRequest request = HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + port + "/metrics")).build();
+                    last = client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+                    if (Arrays.stream(expectedLines).allMatch(last::contains)) {
+                        return last;
+                    }
+                } catch (IOException notUpYet) {
+                    // The server may still be starting; try again.
+                }
+            }
+            Thread.sleep(200);
+        }
+        return last;
+    }
+
     private Thread startConsumer() {
+        return startConsumer(AlertConsumerConfig.METRICS_DISABLED);
+    }
+
+    private Thread startConsumer(int metricsPort) {
         AlertConsumer.resetForNextRun();
 
         AlertConsumerConfig config = new AlertConsumerConfig(
                 kafka.getBootstrapServers(),
                 POSTGRES.getJdbcUrl(),
                 POSTGRES.getUsername(),
-                POSTGRES.getPassword());
+                POSTGRES.getPassword(),
+                AlertConsumerConfig.DEFAULT_DLQ_FALLBACK_PATH,
+                metricsPort);
 
         Thread thread = new Thread(() -> {
             try {

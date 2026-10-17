@@ -47,6 +47,7 @@ public class AlertConsumer {
     private static final long SHUTDOWN_CHECK_INTERVAL_MS = 200;
     private static volatile boolean shuttingDown = false;
     private static volatile KafkaConsumer<String, String> activeConsumer;
+    private static volatile int metricsPort = -1;
 
     private static final ValidatorFactory VALIDATOR_FACTORY =
             Validation.buildDefaultValidatorFactory();
@@ -141,8 +142,15 @@ public class AlertConsumer {
         }
 
         AlertWriter writer = null;
+        MetricsServer metricsServer = null;
+        AlertMetrics metrics = AlertMetrics.create();
 
         try {
+            if (config.metricsEnabled()) {
+                metricsServer = startMetricsServer(config.metricsPort(), metrics);
+                metricsPort = metricsServer.port();
+            }
+
             writer = new AlertWriter(
                     AlertConsumer::connectWithRetry,
                     AlertConsumer::writeFallback,
@@ -150,7 +158,7 @@ public class AlertConsumer {
             );
 
             RecordProcessor processor =
-                    new RecordProcessor(writer, OBJECT_MAPPER, VALIDATOR);
+                    new RecordProcessor(writer, OBJECT_MAPPER, VALIDATOR, metrics);
 
             BatchLoop.BatchSource source = new BatchLoop.BatchSource() {
                 @Override
@@ -177,7 +185,7 @@ public class AlertConsumer {
                 }
             };
 
-            BatchLoop loop = new BatchLoop(source, processor::process);
+            BatchLoop loop = new BatchLoop(source, processor::process, metrics);
 
             while (true) {
                 loop.runOnce();
@@ -206,12 +214,31 @@ public class AlertConsumer {
                 writer.close();
             }
 
+            if (metricsServer != null) {
+                metricsServer.close();
+            }
+            metricsPort = -1;
+
             consumer.close();
             activeConsumer = null;
 
             log.info("Consumer closed cleanly");
         }
     }
+
+    private static MetricsServer startMetricsServer(int port, AlertMetrics metrics) {
+        try {
+            return MetricsServer.start(port, metrics);
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException("Cannot start the metrics server on port " + port, e);
+        }
+    }
+
+    /** The port the metrics endpoint is bound to, or -1 while it is not running. */
+    static int metricsPort() {
+        return metricsPort;
+    }
+
     /** Asks a running {@link #run} to finish its current batch and return. */
     static void stop() {
         shuttingDown = true;
