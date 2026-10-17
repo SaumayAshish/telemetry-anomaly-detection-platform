@@ -184,7 +184,7 @@ public class AnomalyDetectionStreamApp {
         }
     }
 
-    private static <T> Serde<T> jsonSerde(Class<T> type) {
+    static <T> Serde<T> jsonSerde(Class<T> type) {
         Serializer<T> serializer = (topic, value) -> {
             try {
                 return OBJECT_MAPPER.writeValueAsBytes(value);
