@@ -68,6 +68,25 @@ echo "S-1001|{\"sensorId\":\"S-1001\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:
 
 - Clean up with `docker compose -p telemetry-pipeline --profile pipeline down -v`.
 
+## Metrics
+
+The alerting service serves Prometheus text at `http://127.0.0.1:9404/metrics` when run with the `pipeline` profile. The port is published on this machine only, and the endpoint has no authentication. `METRICS_PORT` changes the port; `METRICS_PORT=off` turns the endpoint off.
+
+| Metric | Labels | Counts |
+| --- | --- | --- |
+| `alerting_alerts_persisted_total` | `severity` | Alerts written to the database |
+| `alerting_alerts_duplicate_total` | none | Alerts already stored, skipped by the idempotent insert |
+| `alerting_dead_letters_total` | `reason`: `DESERIALIZATION`, `VALIDATION`, `INSERT_REJECTED` | Records sent to the dead-letter table |
+| `alerting_commits_lost_total` | none | Offset commits lost to a consumer-group rebalance |
+
+Labelled counters appear after their first event; the unlabelled ones read `0.0` from startup.
+
+```
+curl.exe http://127.0.0.1:9404/metrics
+```
+
+api-service serves `/actuator/prometheus` on port 8080, for tokens with the `METRICS_READER` role only.
+
 ## API
 
 `GET /api/alerts` (role `ALERT_READER`) takes optional `sensorId`, `severity`, and a `from`/`to` pair (ISO-8601 instants, not combined with the other filters), plus `page` (default 0) and `size` (default 50, 1 to 200). Results are newest first, the body is a JSON array and the total number of matches is in the `X-Total-Count` header. A database outage answers `503` with `Retry-After`; a rejected token gets `401` with `error="invalid_token"`.

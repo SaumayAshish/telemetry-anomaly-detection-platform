@@ -124,6 +124,10 @@ services:
       DB_USER: telemetry_app
       DB_PASSWORD: ${DB_PASSWORD:-localdevpassword}
       DLQ_FALLBACK_PATH: /data/dlq-fallback.jsonl
+      METRICS_PORT: "9404"
+    # The metrics endpoint has no authentication, so publish it on this machine only.
+    ports:
+      - "127.0.0.1:9404:9404"
     volumes:
       - alerting-data:/data
 
