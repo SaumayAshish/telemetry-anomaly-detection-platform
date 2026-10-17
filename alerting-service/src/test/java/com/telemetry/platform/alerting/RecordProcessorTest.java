@@ -147,7 +147,7 @@ class RecordProcessorTest {
         String payload = mapper.writeValueAsString(EVENT);
         sink.nextResult = PersistResult.rejected(new SQLException("unknown sensor", "23503"));
         RecordProcessor processor =
-                new RecordProcessor(sink, new UnserializableMapper(), noViolations());
+                new RecordProcessor(sink, new UnserializableMapper(), noViolations(), AlertMetrics.create());
 
         processor.process(POSITION, payload);
 
@@ -180,7 +180,7 @@ class RecordProcessorTest {
     }
 
     private RecordProcessor processor(Validator validator) {
-        return new RecordProcessor(sink, mapper, validator);
+        return new RecordProcessor(sink, mapper, validator, AlertMetrics.create());
     }
 
     private static Validator noViolations() {

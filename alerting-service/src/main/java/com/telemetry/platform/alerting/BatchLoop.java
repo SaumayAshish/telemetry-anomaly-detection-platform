@@ -35,10 +35,6 @@ final class BatchLoop {
     private final RecordHandler handler;
     private final AlertMetrics metrics;
 
-    BatchLoop(BatchSource source, RecordHandler handler) {
-        this(source, handler, AlertMetrics.create());
-    }
-
     BatchLoop(BatchSource source, RecordHandler handler, AlertMetrics metrics) {
         this.source = source;
         this.handler = handler;

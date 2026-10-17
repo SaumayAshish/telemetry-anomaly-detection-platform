@@ -32,10 +32,6 @@ final class RecordProcessor {
     private final Validator validator;
     private final AlertMetrics metrics;
 
-    RecordProcessor(AlertSink sink, ObjectMapper mapper, Validator validator) {
-        this(sink, mapper, validator, AlertMetrics.create());
-    }
-
     RecordProcessor(AlertSink sink, ObjectMapper mapper, Validator validator, AlertMetrics metrics) {
         this.sink = sink;
         this.mapper = mapper;

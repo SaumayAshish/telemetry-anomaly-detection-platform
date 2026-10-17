@@ -38,7 +38,7 @@ class BatchLoopTest {
         if (processFailure != null) {
             throw processFailure;
         }
-    });
+    }, AlertMetrics.create());
 
     private static PolledRecord record(long offset) {
         return new PolledRecord(new RecordPosition("telemetry.sensor.anomalies.v1", 0, offset), "{}");
