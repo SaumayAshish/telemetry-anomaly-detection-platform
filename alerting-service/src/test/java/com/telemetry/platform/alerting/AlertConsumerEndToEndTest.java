@@ -2,6 +2,7 @@ package com.telemetry.platform.alerting;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.telemetry.platform.events.AnomalyEvent;
 import com.telemetry.platform.events.AnomalySeverity;
 import java.io.IOException;
@@ -9,6 +10,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -34,6 +37,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
@@ -174,6 +178,39 @@ class AlertConsumerEndToEndTest {
 
     @Test
     @Timeout(180)
+    void aDeadLetterTheTableRefusesFallsBackToTheLocalFileAndTheStreamGoesOn(@TempDir Path dir) throws Exception {
+        Path fallbackFile = dir.resolve("dlq-fallback.jsonl");
+        send("{not json");
+        send(validEventJson());
+
+        blockDeadLetterInserts();
+        try {
+            Thread consumer = startConsumer(AlertConsumerConfig.METRICS_DISABLED, fallbackFile.toString());
+            try {
+                assertThat(awaitCount("anomaly_alerts", 1)).isEqualTo(1);
+            } finally {
+                stopConsumer(consumer);
+            }
+        } finally {
+            allowDeadLetterInserts();
+        }
+
+        assertThat(fallbackFile).exists();
+        List<String> lines = Files.readAllLines(fallbackFile);
+        assertThat(lines).hasSize(1);
+        JsonNode record = RecordProcessor.newObjectMapper().readTree(lines.get(0));
+        assertThat(record.get("kafkaTopic").asText()).isEqualTo(TOPIC);
+        assertThat(record.get("kafkaPartition").asInt()).isZero();
+        assertThat(record.get("kafkaOffset").asLong()).isZero();
+        assertThat(record.get("payload").asText()).isEqualTo("{not json");
+        assertThat(record.get("sqlState").asText()).isEqualTo("DESERIALIZATION");
+        assertThat(record.get("dlqWriteFailureSqlState").asText()).isEqualTo("23514");
+        assertThat(count("alert_dlq")).isZero();
+        assertThat(committedOffset()).isEqualTo(2L);
+    }
+
+    @Test
+    @Timeout(180)
     void theMetricsEndpointCountsWhatTheConsumerDid() throws Exception {
         send("{not json");
         send(validEventJson());
@@ -245,6 +282,10 @@ class AlertConsumerEndToEndTest {
     }
 
     private Thread startConsumer(int metricsPort) {
+        return startConsumer(metricsPort, AlertConsumerConfig.DEFAULT_DLQ_FALLBACK_PATH);
+    }
+
+    private Thread startConsumer(int metricsPort, String fallbackPath) {
         AlertConsumer.resetForNextRun();
 
         AlertConsumerConfig config = new AlertConsumerConfig(
@@ -252,7 +293,7 @@ class AlertConsumerEndToEndTest {
                 POSTGRES.getJdbcUrl(),
                 POSTGRES.getUsername(),
                 POSTGRES.getPassword(),
-                AlertConsumerConfig.DEFAULT_DLQ_FALLBACK_PATH,
+                fallbackPath,
                 metricsPort);
 
         Thread thread = new Thread(() -> {
@@ -323,6 +364,20 @@ class AlertConsumerEndToEndTest {
              ResultSet rs = s.executeQuery("SELECT count(*) FROM " + table)) {
             rs.next();
             return rs.getInt(1);
+        }
+    }
+
+    // A check nothing can satisfy: every insert into alert_dlq fails with SQLState 23514, which the
+    // writer treats as permanent. The table is empty here (prepare() truncates it).
+    private static void blockDeadLetterInserts() throws SQLException {
+        try (Connection c = connect(); Statement s = c.createStatement()) {
+            s.execute("ALTER TABLE alert_dlq ADD CONSTRAINT ck_test_block CHECK (false)");
+        }
+    }
+
+    private static void allowDeadLetterInserts() throws SQLException {
+        try (Connection c = connect(); Statement s = c.createStatement()) {
+            s.execute("ALTER TABLE alert_dlq DROP CONSTRAINT IF EXISTS ck_test_block");
         }
     }
 
