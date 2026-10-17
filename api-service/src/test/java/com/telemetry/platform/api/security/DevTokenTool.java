@@ -17,7 +17,9 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Development tool, not part of the application. Run its main method from the IDE.
@@ -48,13 +50,22 @@ public final class DevTokenTool {
 
         PrivateKey privateKey = readPrivateKey(privateKeyFile);
 
-        Instant now = Instant.now();
-        write(KEY_DIR.resolve("token-reader.txt"), sign(privateKey, List.of("ALERT_READER"), now.plusSeconds(3600)));
-        write(KEY_DIR.resolve("token-guest.txt"), sign(privateKey, List.of("GUEST"), now.plusSeconds(3600)));
-        write(KEY_DIR.resolve("token-expired.txt"), sign(privateKey, List.of("ALERT_READER"), now.minusSeconds(3600)));
+        for (Map.Entry<String, String> token : tokenFiles(privateKey, Instant.now()).entrySet()) {
+            write(KEY_DIR.resolve(token.getKey()), token.getValue());
+        }
 
         System.out.println("Wrote key pair and tokens to " + KEY_DIR.toAbsolutePath());
         System.out.println("Public key for APP_SECURITY_JWT_PUBLIC_KEY_PATH: " + publicKeyFile.toAbsolutePath());
+    }
+
+    /** Every dev token by file name: three for the alert API and one for scraping metrics. */
+    static Map<String, String> tokenFiles(PrivateKey key, Instant now) throws Exception {
+        Map<String, String> tokens = new LinkedHashMap<>();
+        tokens.put("token-reader.txt", sign(key, List.of("ALERT_READER"), now.plusSeconds(3600)));
+        tokens.put("token-guest.txt", sign(key, List.of("GUEST"), now.plusSeconds(3600)));
+        tokens.put("token-expired.txt", sign(key, List.of("ALERT_READER"), now.minusSeconds(3600)));
+        tokens.put("token-metrics.txt", sign(key, List.of("METRICS_READER"), now.plusSeconds(3600)));
+        return tokens;
     }
 
     private static String sign(PrivateKey key, List<String> roles, Instant expiresAt) throws Exception {

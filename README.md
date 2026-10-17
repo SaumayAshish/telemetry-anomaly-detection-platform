@@ -85,7 +85,7 @@ Labelled counters appear after their first event; the unlabelled ones read `0.0`
 curl.exe http://127.0.0.1:9404/metrics
 ```
 
-api-service serves `/actuator/prometheus` on port 8080, for tokens with the `METRICS_READER` role only.
+api-service serves `/actuator/prometheus` on port 8080, for tokens with the `METRICS_READER` role only. `DevTokenTool` also writes a one-hour `dev-keys/token-metrics.txt` for it; send it as the bearer token.
 
 ## API
 
