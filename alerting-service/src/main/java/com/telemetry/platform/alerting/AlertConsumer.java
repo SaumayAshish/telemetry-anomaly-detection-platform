@@ -1,7 +1,6 @@
 package com.telemetry.platform.alerting;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.telemetry.platform.alerting.AlertWriter.DeadLetter;
 import com.telemetry.platform.alerting.AlertWriter.RecordPosition;
 import com.telemetry.platform.alerting.BatchLoop.PolledRecord;
 import jakarta.validation.Validation;
@@ -17,20 +16,13 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 
 public class AlertConsumer {
@@ -153,7 +145,7 @@ public class AlertConsumer {
 
             writer = new AlertWriter(
                     AlertConsumer::connectWithRetry,
-                    AlertConsumer::writeFallback,
+                    new FileDeadLetterFallback(Path.of(config.dlqFallbackPath()), OBJECT_MAPPER),
                     AlertConsumer::sleepUnlessShuttingDown
             );
 
@@ -252,104 +244,6 @@ public class AlertConsumer {
     /** Clears the stop request so {@link #run} can be started again in the same JVM. */
     static void resetForNextRun() {
         shuttingDown = false;
-    }
-
-    /** Adapts the writer's fallback hook to the file-based last resort below. */
-    private static void writeFallback(
-            RecordPosition position,
-            DeadLetter letter,
-            SQLException dlqWriteFailure
-    ) {
-        writeFallbackRecord(
-                letter.sensorId(),
-                letter.payload(),
-                position.topic(),
-                position.partition(),
-                position.offset(),
-                letter.sqlState(),
-                letter.errorMessage(),
-                dlqWriteFailure
-        );
-    }
-
-    /**
-     * Last-resort persistence when the dead-letter table write fails
-     * for a non-retryable reason.
-     */
-    private static void writeFallbackRecord(
-            String sensorId,
-            String payload,
-            String kafkaTopic,
-            int kafkaPartition,
-            long kafkaOffset,
-            String sqlState,
-            String errorMessage,
-            SQLException dlqWriteFailure
-    ) {
-        try {
-            Map<String, Object> fallbackRecord = new LinkedHashMap<>();
-            fallbackRecord.put("kafkaTopic", kafkaTopic);
-            fallbackRecord.put("kafkaPartition", kafkaPartition);
-            fallbackRecord.put("kafkaOffset", kafkaOffset);
-            fallbackRecord.put("sensorId", sensorId);
-            fallbackRecord.put("payload", payload);
-            fallbackRecord.put("sqlState", sqlState);
-            fallbackRecord.put("errorMessage", errorMessage);
-            fallbackRecord.put(
-                    "dlqWriteFailureSqlState",
-                    dlqWriteFailure.getSQLState()
-            );
-            fallbackRecord.put(
-                    "dlqWriteFailureReason",
-                    dlqWriteFailure.getMessage()
-            );
-            fallbackRecord.put("failedAt", Instant.now().toString());
-
-            String line =
-                    OBJECT_MAPPER.writeValueAsString(fallbackRecord)
-                            + System.lineSeparator();
-
-            try (FileChannel channel = FileChannel.open(
-                    Path.of(config.dlqFallbackPath()),
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND,
-                    StandardOpenOption.WRITE
-            )) {
-                channel.write(
-                        ByteBuffer.wrap(line.getBytes(StandardCharsets.UTF_8))
-                );
-                channel.force(true);
-            }
-
-            log.error(
-                    "DLQ_TABLE_WRITE_FAILED, fell back to local file topic={} partition={} offset={} sensorId={} sqlState={} file={}",
-                    kafkaTopic,
-                    kafkaPartition,
-                    kafkaOffset,
-                    safe(sensorId),
-                    dlqWriteFailure.getSQLState(),
-                    config.dlqFallbackPath()
-            );
-
-        } catch (IOException | RuntimeException fallbackFailure) {
-
-            log.error(
-                    "DLQ table write AND local file fallback both failed, record permanently lost topic={} partition={} offset={} sensorId={} dlqSqlState={} fallbackException={}",
-                    kafkaTopic,
-                    kafkaPartition,
-                    kafkaOffset,
-                    safe(sensorId),
-                    dlqWriteFailure.getSQLState(),
-                    fallbackFailure.getClass().getSimpleName()
-            );
-
-            throw new UncheckedIOException(
-                    "Unable to persist failed message anywhere - DB and local fallback both failed",
-                    fallbackFailure instanceof IOException ioFailure
-                            ? ioFailure
-                            : new IOException(fallbackFailure)
-            );
-        }
     }
 
     private static Connection connectWithRetry() throws InterruptedException {
