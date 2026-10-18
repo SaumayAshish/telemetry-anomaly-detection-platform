@@ -94,6 +94,7 @@ final class AlertWriter implements AlertSink, AutoCloseable {
     private final ConnectionSource connections;
     private final Fallback fallback;
     private final Sleeper sleeper;
+    private final AlertMetrics metrics;
     private final LongSupplier clock;
 
     private Connection connection;
@@ -101,16 +102,22 @@ final class AlertWriter implements AlertSink, AutoCloseable {
     private PreparedStatement insertDeadLetter;
     private long lastUsedNanos;
 
-    AlertWriter(ConnectionSource connections, Fallback fallback, Sleeper sleeper)
+    AlertWriter(ConnectionSource connections, Fallback fallback, Sleeper sleeper, AlertMetrics metrics)
             throws SQLException, InterruptedException {
-        this(connections, fallback, sleeper, System::nanoTime);
+        this(connections, fallback, sleeper, metrics, System::nanoTime);
     }
 
-    AlertWriter(ConnectionSource connections, Fallback fallback, Sleeper sleeper, LongSupplier clock)
+    AlertWriter(
+            ConnectionSource connections,
+            Fallback fallback,
+            Sleeper sleeper,
+            AlertMetrics metrics,
+            LongSupplier clock)
             throws SQLException, InterruptedException {
         this.connections = connections;
         this.fallback = fallback;
         this.sleeper = sleeper;
+        this.metrics = metrics;
         this.clock = clock;
         try {
             open();

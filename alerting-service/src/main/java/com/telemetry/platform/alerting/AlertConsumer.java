@@ -146,7 +146,8 @@ public class AlertConsumer {
             writer = new AlertWriter(
                     AlertConsumer::connectWithRetry,
                     new FileDeadLetterFallback(Path.of(config.dlqFallbackPath()), OBJECT_MAPPER),
-                    AlertConsumer::sleepUnlessShuttingDown
+                    AlertConsumer::sleepUnlessShuttingDown,
+                    metrics
             );
 
             RecordProcessor processor =

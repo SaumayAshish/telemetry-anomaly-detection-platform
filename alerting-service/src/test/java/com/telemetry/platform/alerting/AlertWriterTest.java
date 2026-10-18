@@ -53,6 +53,7 @@ class AlertWriterTest {
     private final FakeDatabase db = new FakeDatabase();
     private final List<FallbackCall> fallbackCalls = new ArrayList<>();
     private final List<Long> sleeps = new ArrayList<>();
+    private final AlertMetrics metrics = AlertMetrics.create();
 
     @Test
     void insertsAnAlertOnAHealthyConnection() throws Exception {
@@ -80,7 +81,7 @@ class AlertWriterTest {
     void reconnectsBeforeWritingWhenTheConnectionWentStale() throws Exception {
         long[] now = {0L};
         AlertWriter writer = new AlertWriter(
-                db.source(), this::recordFallback, this::recordSleep, () -> now[0]);
+                db.source(), this::recordFallback, this::recordSleep, metrics, () -> now[0]);
         now[0] += Duration.ofSeconds(31).toNanos();
         db.nextValidityCheckFails();
 
@@ -185,6 +186,7 @@ class AlertWriterTest {
                 },
                 this::recordFallback,
                 this::recordSleep,
+                metrics,
                 () -> now[0]);
 
         now[0] += Duration.ofSeconds(31).toNanos();
@@ -205,7 +207,7 @@ class AlertWriterTest {
                 this::recordFallback,
                 millis -> {
                     throw new InterruptedException("shutdown");
-                });
+                }, metrics);
 
         assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
                 .isInstanceOf(InterruptedException.class);
@@ -222,7 +224,7 @@ class AlertWriterTest {
         }
 
         AlertWriter writer =
-                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep);
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep, metrics);
 
         assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
                 .isInstanceOf(SQLException.class);
@@ -240,7 +242,7 @@ class AlertWriterTest {
         }
 
         AlertWriter writer =
-                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep);
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep, metrics);
 
         assertThatThrownBy(() -> writer.deadLetter(POSITION, LETTER))
                 .isInstanceOf(SQLException.class);
@@ -271,7 +273,8 @@ class AlertWriterTest {
         return new AlertWriter(
                 db.source(),
                 this::recordFallback,
-                this::recordSleep);
+                this::recordSleep,
+                metrics);
     }
 
     private void recordFallback(

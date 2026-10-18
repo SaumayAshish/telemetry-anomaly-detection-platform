@@ -31,7 +31,7 @@ class AlertWriterIdleValidationTest {
     private final long[] now = {0L};
 
     private AlertWriter newWriter() throws SQLException, InterruptedException {
-        return new AlertWriter(db.source(), (position, letter, failure) -> { }, millis -> { }, () -> now[0]);
+        return new AlertWriter(db.source(), (position, letter, failure) -> { }, millis -> { }, AlertMetrics.create(), () -> now[0]);
     }
 
     @Test
