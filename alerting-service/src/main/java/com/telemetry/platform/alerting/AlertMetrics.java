@@ -42,6 +42,10 @@ final class AlertMetrics {
         commitsLost.increment();
     }
 
+    void retried(String operation) {
+        registry.counter("alerting.db.retries", "operation", operation).increment();
+    }
+
     String scrape() {
         return registry.scrape();
     }

@@ -252,6 +252,94 @@ class AlertWriterTest {
         assertThat(fallbackCalls).isEmpty();
     }
 
+    @Test
+    void countsOneRetryForATransientInsertFailure() throws Exception {
+        db.alertInsertThrows(new SQLException("connection lost", "08006"));
+        AlertWriter writer = newWriter();
+
+        writer.persist(POSITION, EVENT);
+
+        assertThat(metrics.scrape())
+                .contains("alerting_db_retries_total{operation=\"persisting_alert\"} 1.0");
+    }
+
+    @Test
+    void doesNotCountTheFinalFailureWhenAnInsertKeepsFailing()
+            throws Exception {
+
+        for (int i = 0; i < 100; i++) {
+            db.alertInsertThrows(new SQLException("disk full", "53100"));
+        }
+
+        AlertWriter writer =
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep, metrics);
+
+        assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
+                .isInstanceOf(SQLException.class);
+
+        assertThat(metrics.scrape())
+                .contains("alerting_db_retries_total{operation=\"persisting_alert\"} 4.0");
+    }
+
+    @Test
+    void countsOneRetryForATransientDeadLetterFailure() throws Exception {
+        db.deadLetterInsertThrows(new SQLException("connection lost", "08006"));
+        AlertWriter writer = newWriter();
+
+        writer.deadLetter(POSITION, LETTER);
+
+        assertThat(metrics.scrape())
+                .contains("alerting_db_retries_total{operation=\"writing_dead_letter\"} 1.0");
+    }
+
+    @Test
+    void doesNotCountTheFinalFailureWhenADeadLetterWriteKeepsFailing()
+            throws Exception {
+
+        for (int i = 0; i < 100; i++) {
+            db.deadLetterInsertThrows(new SQLException("disk full", "53100"));
+        }
+
+        AlertWriter writer =
+                new AlertWriter(boundedSource(50), this::recordFallback, this::recordSleep, metrics);
+
+        assertThatThrownBy(() -> writer.deadLetter(POSITION, LETTER))
+                .isInstanceOf(SQLException.class);
+
+        assertThat(metrics.scrape())
+                .contains("alerting_db_retries_total{operation=\"writing_dead_letter\"} 4.0");
+    }
+
+    @Test
+    void countsNoRetryWhenNothingTransientHappened() throws Exception {
+        AlertWriter writer = newWriter();
+
+        writer.persist(POSITION, EVENT);
+        db.alertInsertThrows(new SQLException("unknown sensor", "23503"));
+        writer.persist(POSITION, EVENT);
+        db.deadLetterInsertThrows(new SQLException("value too long", "22001"));
+        writer.deadLetter(POSITION, LETTER);
+
+        assertThat(metrics.scrape()).doesNotContain("alerting_db_retries");
+    }
+
+    @Test
+    void doesNotCountARetryWhenShutdownInterruptsTheBackoff() throws Exception {
+        db.alertInsertThrows(new SQLException("connection lost", "08006"));
+        AlertWriter writer = new AlertWriter(
+                db.source(),
+                this::recordFallback,
+                millis -> {
+                    throw new InterruptedException("shutdown");
+                },
+                metrics);
+
+        assertThatThrownBy(() -> writer.persist(POSITION, EVENT))
+                .isInstanceOf(InterruptedException.class);
+
+        assertThat(metrics.scrape()).doesNotContain("alerting_db_retries");
+    }
+
     /**
      * Fails the test instead of letting a runaway retry loop spin forever.
      */

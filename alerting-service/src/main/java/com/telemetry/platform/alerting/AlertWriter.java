@@ -238,6 +238,7 @@ final class AlertWriter implements AlertSink, AutoCloseable {
                 failure.getSQLState());
 
         sleeper.sleep(INITIAL_RETRY_DELAY_MS << (failures - 1));
+        metrics.retried(operation.replace(' ', '_'));
     }
 
     private void ensureValid(RecordPosition position) throws SQLException, InterruptedException {

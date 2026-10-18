@@ -78,6 +78,7 @@ The alerting service serves Prometheus text at `http://127.0.0.1:9404/metrics` w
 | `alerting_alerts_duplicate_total` | none | Alerts already stored, skipped by the idempotent insert |
 | `alerting_dead_letters_total` | `reason`: `DESERIALIZATION`, `VALIDATION`, `INSERT_REJECTED` | Records sent to the dead-letter table |
 | `alerting_commits_lost_total` | none | Offset commits lost to a consumer-group rebalance |
+| `alerting_db_retries_total` | `operation`: `persisting_alert`, `writing_dead_letter` | Retries after a transient database error; the attempt that gives up is not counted |
 
 Labelled counters appear after their first event; the unlabelled ones read `0.0` from startup.
 

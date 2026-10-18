@@ -47,4 +47,15 @@ class AlertMetricsTest {
 
         assertThat(metrics.scrape()).contains("alerting_commits_lost_total 1.0");
     }
+
+    @Test
+    void databaseRetriesAreCountedPerOperation() {
+        metrics.retried("persisting_alert");
+        metrics.retried("persisting_alert");
+        metrics.retried("writing_dead_letter");
+
+        assertThat(metrics.scrape())
+                .contains("alerting_db_retries_total{operation=\"persisting_alert\"} 2.0")
+                .contains("alerting_db_retries_total{operation=\"writing_dead_letter\"} 1.0");
+    }
 }
