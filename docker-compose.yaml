@@ -168,8 +168,32 @@ services:
       APP_SECURITY_JWT_PUBLIC_KEY_PATH: /keys/public.pem
     volumes:
       - jwt-keys:/keys:ro
+
+  # Dev-only: runs the 600-tick demo scenario once (fixed seed, injected faults) and writes its ground truth
+  # to a volume. Started with --profile demo; stop the long-running `ingestion` service first.
+  ingestion-demo:
+    build:
+      context: .
+      args:
+        MODULE: ingestion-service
+    image: telemetry/ingestion-service:dev
+    profiles: ["demo"]
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      SIMULATION_SCENARIO: demo
+      SIMULATION_SEED: ${SIMULATION_SEED:-42}
+      SIMULATION_INTERVAL_MS: ${SIMULATION_INTERVAL_MS:-500}
+      SIMULATION_GROUND_TRUTH_PATH: /data/ground-truth.csv
+    volumes:
+      - demo-data:/data
+
 volumes:
   kafka-data:
   timescale-data:
   jwt-keys:
   alerting-data:
+  demo-data:
