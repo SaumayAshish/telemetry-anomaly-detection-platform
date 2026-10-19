@@ -1,6 +1,8 @@
 # Real-Time Telemetry Anomaly Detection Platform
 
 ![CI](https://github.com/SaumayAshish/telemetry-anomaly-detection-platform/actions/workflows/ci.yml/badge.svg)
+![Java 26](https://img.shields.io/badge/Java-26-orange)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 Streaming platform that ingests sensor telemetry, flags statistical anomalies in real time, persists alerts durably, and serves them through a secured REST API. Java 26, Spring Boot 4.1, Kafka, TimescaleDB.
 
@@ -76,7 +78,7 @@ Five sensors, 600 readings each, ten injected faults. Alerts are dots, shaded an
 - Baseline is not updated by anomalous readings (hysteresis), so outliers cannot hide themselves.
 - Idempotency key = Kafka `(partition, offset)`; redelivery never creates duplicate rows.
 - Logging rules and what must never be logged: `docs/logging-policy.md`.
-- Decision records in `docs/adr/`: 0001 topic and partition key, 0002 JWT bearer authentication, 0003 alerting failure handling, 0004 idempotency key, 0005 baseline hysteresis and rebaselining.
+- Decision records in `docs/adr/`: 0001 topic and partition key, 0002 JWT bearer authentication, 0003 alerting failure handling, 0004 idempotency key, 0005 baseline hysteresis and rebaselining, 0006 seeded fault simulator and scored demo.
 
 ## Getting started
 
@@ -155,7 +157,7 @@ Java 26, Spring Boot 4.1, Kafka (KRaft) and Kafka Streams, TimescaleDB on Postgr
 
 ## Status
 
-Complete and closed: the streaming pipeline, durable persistence with retry, dead-lettering and idempotency, API security and paging, Prometheus metrics for the alerting service, the seeded fault simulator with scored results, and CI (unit and Testcontainers tests) on every push.
+Complete and closed (v1.0.0): the streaming pipeline, durable persistence with retry, dead-lettering and idempotency, API security and paging, Prometheus metrics for the alerting service, the seeded fault simulator with scored results, and CI (unit and Testcontainers tests) on every push.
 
 Known limitations:
 
@@ -165,3 +167,7 @@ Known limitations:
 - Retries that are finally given up are not counted by a metric.
 - The api-service metrics scrape needs a bearer token that expires hourly.
 - The baseline is cumulative per sensor, so it adapts slowly to a gradual process change; a windowed or exponentially weighted baseline is the obvious next step.
+
+## License
+
+MIT. See `LICENSE`.
