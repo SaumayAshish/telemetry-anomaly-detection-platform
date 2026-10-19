@@ -1,0 +1,13 @@
+# HELP alerting_alerts_duplicate_total  
+# TYPE alerting_alerts_duplicate_total counter
+alerting_alerts_duplicate_total 0.0
+# HELP alerting_alerts_persisted_total  
+# TYPE alerting_alerts_persisted_total counter
+alerting_alerts_persisted_total{severity="CRITICAL"} 1.0
+alerting_alerts_persisted_total{severity="HIGH"} 3.0
+alerting_alerts_persisted_total{severity="LOW"} 50.0
+alerting_alerts_persisted_total{severity="MEDIUM"} 24.0
+# HELP alerting_commits_lost_total  
+# TYPE alerting_commits_lost_total counter
+alerting_commits_lost_total 0.0
+
