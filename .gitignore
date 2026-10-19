@@ -19,3 +19,6 @@ Thumbs.db
 dlq-fallback.jsonl
 
 dev-keys/
+
+# Raw output of local demo runs (the committed copy lives in docs/demo/)
+demo-results/
